@@ -1,9 +1,10 @@
+
 import sys
 from optical_aligner import OpticalAligner
 
 # --- CONFIGURATION ---
 # UPDATE THIS TO MATCH YOUR SYSTEM'S DEVICE PATH / SERIAL NUMBER
-KQD_PORT = "/dev/kqd"     # Symlink for the Quadrant Detector/Piezo Controller
+KQD_PORT = "/dev/ttyUSB0"     # Symlink for the Quadrant Detector/Piezo Controller
 # ---------------------
 
 def main():
@@ -31,4 +32,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

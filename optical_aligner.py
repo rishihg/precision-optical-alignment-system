@@ -3,91 +3,70 @@ import numpy as np
 from pylablib.devices import Thorlabs
 from ticlib import TicUSB
 from pid_controller import PID
+import sys
+import threading
 
 class OpticalAligner:
     """
     Manages hardware and control logic for an automated optical alignment system.
-    Includes methods for both slow (motorized) and fast (piezo-based hardware)
-    feedback loops.
     """
-    def __init__(self, kqd_port, km_port=None):
-        """Initializes hardware port information."""
+    def __init__(self, kqd_port=None, km_port=None):
         self.kqd_port = kqd_port
         self.km_port = km_port
-
         self.kqd = None
         self.km = None
         self.tic = None
-        self.Minv = None  # Inverse calibration matrix for SLOW steering
-
-        # PID controllers for SLOW steering
+        self.Minv = None
         self.pid_x = PID(Kp=0.1, Ki=0.1, Kd=0.05, setpoint=0.0)
         self.pid_y = PID(Kp=0.1, Ki=0.1, Kd=0.05, setpoint=0.0)
-        
-        # Store last used PID parameters for fast steering
+        self.baseline_sum = None
         self.last_pid_params = {'p': 1.0, 'i': 0.0, 'd': 0.0}
+        self.stop_loop_event = threading.Event()
 
-    def connect_fast_steering(self, init_delay=1.0):
-        """Establishes connection to the KQD for fast steering modes."""
-        print("--- Connecting for Fast Steering ---")
-        try:
-            print(f"Connecting to KinesisQuadDetector on {self.kqd_port}...")
-            self.kqd = Thorlabs.KinesisQuadDetector(self.kqd_port)
-            print("KQD connected.")
-            print(f"Waiting {init_delay}s for hardware to stabilize...")
-            time.sleep(init_delay)
-            print("Fast steering hardware ready.")
-        except Exception as e:
-            print(f"A critical error occurred during connection: {e}")
-            raise
+    def connect_fast_steering(self):
+        if not self.kqd_port:
+            raise ValueError("KQD port (serial number) is not set.")
+        print("--- Connecting to KQD for fast steering ---")
+        self.kqd = Thorlabs.KinesisQuadDetector(self.kqd_port)
+        print("KQD connected successfully.")
 
     def disconnect_fast_steering(self):
-        """Safely disconnects hardware used for fast steering."""
-        print("\n--- Disconnecting Fast Steering Hardware ---")
+        print("\n--- Disconnecting KQD ---")
         if self.kqd and self.kqd.is_opened():
-            self.kqd.close()
-            print("KQD connection closed.")
-        print("Fast steering hardware disconnected safely.")
+            try:
+                self.kqd.set_operation_mode("monitor")
+                self.kqd.close()
+            except Exception as e:
+                print(f"Could not fully disconnect KQD: {e}", file=sys.stderr)
+        self.kqd = None
+        print("KQD disconnected.")
 
-    def connect_slow_steering(self, init_delay=1.0):
-        """Establishes connections to all hardware for slow steering."""
+    def connect_slow_steering(self):
+        if not self.kqd_port or not self.km_port:
+            raise ValueError("KQD and Kinesis Motor ports are not set.")
         print("--- Connecting for Slow Steering ---")
-        try:
-            print(f"Connecting to KinesisQuadDetector on {self.kqd_port}...")
-            self.kqd = Thorlabs.KinesisQuadDetector(self.kqd_port)
-            print("KQD connected.")
-
-            if self.km_port:
-                print(f"Connecting to Kinesis Motor on {self.km_port}...")
-                self.km = Thorlabs.KinesisMotor(self.km_port)
-                print("Kinesis Motor connected.")
-            else:
-                raise ValueError("Kinesis Motor port (km_port) must be specified for slow steering.")
-
-            print("Connecting to Tic controller...")
-            self.tic = TicUSB()
-            print("Tic controller connected.")
-            
-            print("Initializing Tic stage...")
-            self.tic.halt_and_set_position(0)
-            self.tic.energize()
-            self.tic.exit_safe_start()
-            print("Tic stage initialized.")
-
-            print(f"Waiting {init_delay}s for hardware to stabilize...")
-            time.sleep(init_delay)
-            print("Slow steering hardware ready.")
-
-        except Exception as e:
-            print(f"A critical error occurred during hardware connection: {e}")
-            raise
+        print(f"Connecting to KinesisQuadDetector on {self.kqd_port}...")
+        self.kqd = Thorlabs.KinesisQuadDetector(self.kqd_port)
+        print("KQD connected.")
+        print(f"Connecting to Kinesis Motor on {self.km_port}...")
+        self.km = Thorlabs.KinesisMotor(self.km_port)
+        print("Kinesis Motor connected.")
+        print("Connecting to Tic controller...")
+        self.tic = TicUSB()
+        print("Tic controller connected.")
+        print("Initializing Tic stage...")
+        self.tic.halt_and_set_position(0)
+        self.tic.energize()
+        self.tic.exit_safe_start()
+        print("Tic stage initialized.")
+        print("Waiting 1.0s for hardware to stabilize...")
+        time.sleep(1.0)
+        print("Slow steering hardware ready.")
 
     def disconnect_slow_steering(self):
-        """Safely disconnects all hardware used for slow steering."""
         print("\n--- Disconnecting Slow Steering Hardware ---")
         if self.tic:
             self.tic.deenergize()
-            self.tic.enter_safe_start()
             print("Tic controller de-energized.")
         if self.km and self.km.is_opened():
             self.km.close()
@@ -95,275 +74,335 @@ class OpticalAligner:
         if self.kqd and self.kqd.is_opened():
             self.kqd.close()
             print("KQD connection closed.")
+        self.kqd, self.km, self.tic = None, None, None
         print("Slow steering hardware disconnected safely.")
 
-    def _manage_output_settings(self):
-        """Helper method to display and set KQD output parameters."""
-        print("\n--- KQD Output Settings ---")
-        current_params = self.kqd.get_output_parameters()
-        
-        print("Current Settings:")
-        for key, value in current_params.items():
-            print(f"  - {key}: {value}")
-        
-        new_params = {}
-        # Loop to get new settings from user
-        for key in current_params.keys():
-            # Special handling for route and open_loop_out as they are strings
-            if key in ['route', 'open_loop_out']:
-                new_val_str = input(f"Enter new value for '{key}' (e.g., sma_only, zero) [default: {current_params[key]}]: ")
-                if new_val_str:
-                    new_params[key] = new_val_str
-            else: # Handle numeric values
-                new_val_str = input(f"Enter new value for '{key}' [default: {current_params[key]}]: ")
-                if new_val_str:
-                    try:
-                        new_params[key] = float(new_val_str)
-                    except ValueError:
-                        print(f"Invalid number '{new_val_str}', keeping current value.")
-
-        if new_params:
-            print("\nApplying new settings...")
-            try:
-                self.kqd.set_output_parameters(**new_params)
-                print("Settings applied successfully.")
-            except Exception as e:
-                print(f"Error applying settings: {e}")
-        else:
-            print("\nNo changes made.")
-        input("Press Enter to return to the main menu.")
-
-    def _run_selected_mode(self, mode):
-        """Helper method to run a specific operational mode loop."""
-        print(f"\n--- Entering '{mode.upper()}' Mode ---")
-        print("Press Ctrl+C to stop this mode and return to the menu.")
-        
-        try:
-            if mode == 'monitor':
-                self.kqd.set_operation_mode("monitor")
-                print("Displaying live readings...")
-                while True:
-                    r = self.kqd.get_readings()
-                    print(f"Position | X: {r.xdiff:.5f}, Y: {r.ydiff:.5f}", end='\r')
-                    time.sleep(0.2)
-            
-            elif mode == 'open_loop':
-                self.kqd.set_operation_mode("open_loop")
-                print("Enter voltages for manual control ('q' to exit).")
-                while True:
-                    v_x_str = input("Enter X voltage: ")
-                    if v_x_str.lower() == 'q': break
-                    v_y_str = input("Enter Y voltage: ")
-                    if v_y_str.lower() == 'q': break
-                    try:
-                        v_x, v_y = float(v_x_str), float(v_y_str)
-                        self.kqd.set_manual_output(xpos=v_x, ypos=v_y)
-                        print(f"Manual outputs set to X={v_x:.2f}V, Y={v_y:.2f}V")
-                    except ValueError:
-                        print("Invalid input. Please enter numbers.")
-
-            elif mode == 'closed_loop':
-                print("Configuring KQD for closed-loop operation...")
-                p_str = input(f"Enter P gain [default: {self.last_pid_params['p']}]: ")
-                p_val = float(p_str) if p_str else self.last_pid_params['p']
-                i_str = input(f"Enter I gain [default: {self.last_pid_params['i']}]: ")
-                i_val = float(i_str) if i_str else self.last_pid_params['i']
-                d_str = input(f"Enter D gain [default: {self.last_pid_params['d']}]: ")
-                d_val = float(d_str) if d_str else self.last_pid_params['d']
-                self.last_pid_params = {'p': p_val, 'i': i_val, 'd': d_val}
-                
-                print(f"Setting PID parameters to P={p_val}, I={i_val}, D={d_val}")
-                self.kqd.set_pid_parameters(p=p_val, i=i_val, d=d_val)
-                self.kqd.set_operation_mode("closed_loop")
-                print("Hardware CLOSED-LOOP is ACTIVE.")
-                while True:
-                    r = self.kqd.get_readings()
-                    print(f"Status | Error X: {r.xdiff:.5f}, Error Y: {r.ydiff:.5f}", end='\r')
-                    time.sleep(0.2)
-
-        except (KeyboardInterrupt, ValueError):
-             print(f"\nExiting '{mode.upper()}' mode.")
-
     def manage_fast_steering_mode(self):
-        """
-        Manages the KQD's operational mode for fast steering via an interactive menu.
-        Always resets to 'monitor' mode on exit for safety.
-        """
         if not self.kqd:
-            print("Error: KQD must be connected for fast steering.")
+            print("Error: Fast steering hardware not connected.", file=sys.stderr)
             return
-
+        print("\n--- Fast Steering Control ---")
+        self.kqd.set_operation_mode("monitor")
         try:
-            print("\n--- Entering Fast Steering Control ---")
-            self.kqd.set_operation_mode("monitor")
-            print("Device started in safe MONITOR mode.")
-
             while True:
-                print("\nFast Steering Main Menu:")
-                print("1. Change Mode (monitor, open-loop, closed-loop)")
-                print("2. Change Output Settings")
-                print("3. Exit Fast Steering Control")
-                choice = input("Select an option (1-3): ")
-
+                print("\n--- Main Menu ---")
+                current_mode = self.kqd.get_operation_mode()
+                print(f"Current Mode: {current_mode.upper()}")
+                print("1. Change Mode")
+                print("2. Change Settings")
+                print("3. Exit (resets to monitor mode)")
+                choice = input("Select an option: ").strip()
                 if choice == '1':
-                    mode_choice = input("Enter mode (monitor, open_loop, closed_loop): ").lower()
-                    if mode_choice in ['monitor', 'open_loop', 'closed_loop']:
-                        self._run_selected_mode(mode_choice)
-                    else:
-                        print("Invalid mode selected.")
+                    self._run_selected_mode()
                 elif choice == '2':
                     self._manage_output_settings()
                 elif choice == '3':
-                    print("Exiting fast steering control...")
                     break
                 else:
-                    print("Invalid choice. Please enter 1, 2, or 3.")
-
-        except KeyboardInterrupt:
-            print("\nFast steering control interrupted by user.")
-        
+                    print("Invalid option. Please try again.")
         finally:
-            print("\nResetting KQD to 'monitor' mode for safety...")
-            if self.kqd and self.kqd.is_opened():
+            print("\nResetting KQD to 'monitor' mode before exiting.")
+            self.kqd.set_operation_mode("monitor")
+
+    def _run_selected_mode(self):
+        mode_choice = input("Select mode (monitor, open_loop, closed_loop): ").lower().strip()
+        if mode_choice not in ["monitor", "open_loop", "closed_loop"]:
+            print("Invalid mode.")
+            return
+        try:
+            if mode_choice == "closed_loop":
+                print("\nEnter PID values. Press Enter to use the last known values.")
+                p_str = input(f"  Enter P gain [default: {self.last_pid_params['p']}]: ")
+                i_str = input(f"  Enter I gain [default: {self.last_pid_params['i']}]: ")
+                d_str = input(f"  Enter D gain [default: {self.last_pid_params['d']}]: ")
+                p_val = float(p_str) if p_str else self.last_pid_params['p']
+                i_val = float(i_str) if i_str else self.last_pid_params['i']
+                d_val = float(d_str) if d_str else self.last_pid_params['d']
+                self.last_pid_params = {'p': p_val, 'i': i_val, 'd': d_val}
+                self.kqd.set_pid_parameters(p=p_val, i=i_val, d=d_val)
+                self.kqd.set_operation_mode("closed_loop")
+            elif mode_choice == "open_loop":
+                x_pos = float(input("  Enter manual X output voltage (-10 to 10): "))
+                y_pos = float(input("  Enter manual Y output voltage (-10 to 10): "))
+                self.kqd.set_manual_output(xpos=x_pos, ypos=y_pos)
+                self.kqd.set_operation_mode("open_loop")
+            elif mode_choice == "monitor":
                 self.kqd.set_operation_mode("monitor")
-            print("System is now in a safe state.")
-            time.sleep(1)
+            print(f"\nMode set to '{mode_choice}'. Press Ctrl+C to return to the main menu.")
+            while True:
+                r = self.kqd.get_readings()
+                print(f"X_diff: {r.xdiff:.4f}, Y_diff: {r.ydiff:.4f}, Sum: {r.sum:.4f}", end='\r')
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("\nReturning to main menu.")
+        except Exception as e:
+            print(f"An error occurred: {e}", file=sys.stderr)
+
+    def _manage_output_settings(self):
+        try:
+            current = self.kqd.get_output_parameters()
+            print("\n--- Current Output Settings ---")
+            for key, value in current.items():
+                print(f"  - {key}: {value}")
+            if input("\nUpdate settings? (y/n): ").lower() != 'y':
+                return
+            print("\nEnter new value or press Enter to keep current setting.")
+            xmin = float(input(f"  xmin [{current['xmin']}]: ") or current['xmin'])
+            xmax = float(input(f"  xmax [{current['xmax']}]: ") or current['xmax'])
+            ymin = float(input(f"  ymin [{current['ymin']}]: ") or current['ymin'])
+            ymax = float(input(f"  ymax [{current['ymax']}]: ") or current['ymax'])
+            xgain = float(input(f"  xgain [{current['xgain']}]: ") or current['xgain'])
+            ygain = float(input(f"  ygain [{current['ygain']}]: ") or current['ygain'])
+            route = input(f"  route ('sma_only' or 'sma_hub') [{current['route']}]: ") or current['route']
+            open_loop_out = input(f"  open_loop_out ('zero' or 'fixed') [{current['open_loop_out']}]: ") or current['open_loop_out']
+            self.kqd.set_output_parameters(
+                xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax,
+                xgain=xgain, ygain=ygain, route=route, open_loop_out=open_loop_out
+            )
+            print("\nSettings updated successfully.")
+        except Exception as e:
+            print(f"\nAn error occurred while managing settings: {e}", file=sys.stderr)
+
+    def get_pid_settings(self):
+        return {
+            'x': {'p': self.pid_x.Kp, 'i': self.pid_x.Ki, 'd': self.pid_x.Kd},
+            'y': {'p': self.pid_y.Kp, 'i': self.pid_y.Ki, 'd': self.pid_y.Kd}
+        }
+
+    def set_pid_settings(self, pid_x_p, pid_x_i, pid_x_d, pid_y_p, pid_y_i, pid_y_d):
+        self.pid_x.Kp, self.pid_x.Ki, self.pid_x.Kd = pid_x_p, pid_x_i, pid_x_d
+        self.pid_y.Kp, self.pid_y.Ki, self.pid_y.Kd = pid_y_p, pid_y_i, pid_y_d
+
+    def get_tic_settings(self):
+        if not self.tic: raise ConnectionError("Tic not connected.")
+        return {
+            'velocity': self.tic.get_max_speed(),
+            'current_limit': self.tic.get_current_limit(),
+            'step_mode': self.tic.get_step_mode()
+        }
+
+    def set_tic_settings(self, velocity, current_limit, step_mode):
+        if not self.tic: raise ConnectionError("Tic not connected.")
+        self.tic.set_max_speed(velocity)
+        self.tic.set_current_limit(current_limit)
+        self.tic.set_step_mode(step_mode)
+
+    def get_km_settings(self):
+        if not self.km: raise ConnectionError("Kinesis Motor not connected.")
+        vel_params = self.km.get_velocity_parameters()
+        return {'velocity': vel_params.max_velocity}
+
+    def set_km_settings(self, velocity):
+        if not self.km: raise ConnectionError("Kinesis Motor not connected.")
+        current_accel = self.km.get_velocity_parameters().acceleration
+        self.km.set_velocity_parameters(max_velocity=velocity, acceleration=current_accel)
+
+    def manage_slow_steering_settings(self):
+        if not self.tic or not self.km:
+            print("Error: Slow steering hardware not fully connected.", file=sys.stderr)
+            return
+        print("\n--- Slow Steering Settings ---")
+        try:
+            pid = self.get_pid_settings()
+            tic = self.get_tic_settings()
+            km = self.get_km_settings()
+            print("\nCurrent Settings:")
+            print(f"  - X-Axis PID (P/I/D):      {pid['x']['p']}, {pid['x']['i']}, {pid['x']['d']}")
+            print(f"  - Y-Axis PID (P/I/D):      {pid['y']['p']}, {pid['y']['i']}, {pid['y']['d']}")
+            print(f"  - X-Axis Max Velocity:     {tic['velocity']} (microsteps/10000s)")
+            print(f"  - Y-Axis Max Velocity:     {km['velocity']} (device units)")
+            print(f"  - X-Axis Current Limit:    {tic['current_limit']} (mA)")
+            print(f"  - X-Axis Step Mode:        {tic['step_mode']}")
+            if input("\nUpdate settings? (y/n): ").lower() != 'y':
+                return
+            print("\nEnter new value or press Enter to keep current setting.")
+            new_px = float(input(f"  New X P-gain [{pid['x']['p']}]: ") or pid['x']['p'])
+            new_ix = float(input(f"  New X I-gain [{pid['x']['i']}]: ") or pid['x']['i'])
+            new_dx = float(input(f"  New X D-gain [{pid['x']['d']}]: ") or pid['x']['d'])
+            new_py = float(input(f"  New Y P-gain [{pid['y']['p']}]: ") or pid['y']['p'])
+            new_iy = float(input(f"  New Y I-gain [{pid['y']['i']}]: ") or pid['y']['i'])
+            new_dy = float(input(f"  New Y D-gain [{pid['y']['d']}]: ") or pid['y']['d'])
+            self.set_pid_settings(new_px, new_ix, new_dx, new_py, new_iy, new_dy)
+            new_tic_vel = int(input(f"  New X-Axis Velocity [{tic['velocity']}]: ") or tic['velocity'])
+            new_tic_curr = int(input(f"  New X-Axis Current [{tic['current_limit']}]: ") or tic['current_limit'])
+            new_tic_step = int(input(f"  New X-Axis Step Mode (0-5) [{tic['step_mode']}]: ") or tic['step_mode'])
+            self.set_tic_settings(new_tic_vel, new_tic_curr, new_tic_step)
+            new_km_vel = float(input(f"  New Y-Axis Velocity [{km['velocity']}]: ") or km['velocity'])
+            self.set_km_settings(new_km_vel)
+            print("\nSettings updated successfully.")
+        except Exception as e:
+            print(f"\nAn error occurred during settings update: {e}", file=sys.stderr)
 
     def read_kqd_avg(self, n=20, delay=0.05):
-        # ... (rest of the class is unchanged)
-        # ...
-        pass
-    # The rest of the slow steering methods (calibrate, manual_x, manual_y, run_slow_feedback_loop)
-    # remain unchanged below this point. I've omitted them for brevity but they are still there.
+        if not self.kqd:
+            print("Error: KQD not connected, can't take reading.", file=sys.stderr)
+            return None, None, None
+        xs, ys, sums = [], [], []
+        for i in range(n):
+            try:
+                r = self.kqd.get_readings()
+                if r is not None:
+                    xs.append(r.xdiff)
+                    ys.append(r.ydiff)
+                    sums.append(r.sum)
+                else:
+                    pass
+                time.sleep(delay)
+            except Exception as e:
+                print(f"Error during KQD read on attempt {i+1}/{n}: {e}", file=sys.stderr)
+        if not xs or not ys:
+            return None, None, None
+        return np.mean(xs), np.mean(ys), np.mean(sums)
 
-# ... (The rest of the file continues from here)
-    def calibrate(self, dx_tic=20, dy_gon=1000):
-        """
-        Moves each actuator to measure its influence on the detector,
-        then calculates the inverse calibration matrix `Minv`.
-        """
-        print("\n--- Starting system calibration ---")
-        x01, y01 = self.read_kqd_avg()
-        print(f"Initial Neutral QD: {x01:.6f}, {y01:.6f}")
-        print(f"Moving Tic stage by {dx_tic} for calibration...")
-        self.tic.set_target_position(dx_tic)
-        time.sleep(1.0)
-        x1, y1 = self.read_kqd_avg()
-        self.tic.set_target_position(0)
-        time.sleep(3.0)
-        print(f"Tic move effect: Δx={x1-x01:.6f}, Δy={y1-y01:.6f}")
-        x02, y02 = self.read_kqd_avg()
-        print(f"Second Neutral QD: {x02:.6f}, {y02:.6f}")
-        print(f"Moving Goniometer by {dy_gon} for calibration...")
-        self.km.move_by(dy_gon)
-        self.km.wait_move()
-        time.sleep(1.0)
-        x2, y2 = self.read_kqd_avg()
-        self.km.move_by(-dy_gon)
-        self.km.wait_move()
-        time.sleep(1.0)
-        print(f"Goniometer move effect: Δx={x2-x02:.6f}, Δy={y2-y02:.6f}")
-        M = np.array([
-            [(x1 - x01) / dx_tic, (x2 - x02) / dy_gon],
-            [(y1 - y01) / dx_tic, (y2 - y02) / dy_gon]
-        ])
-        print("\nCalibration Matrix M:")
-        print(M)
-        try:
-            self.Minv = np.linalg.inv(M)
-            print("Inverse Calibration Matrix Minv:")
-            print(self.Minv)
-            print("Calibration successful.")
-        except np.linalg.LinAlgError:
-            print("\nError: Calibration failed. Matrix is singular and cannot be inverted.")
-            print("Check motor connections, power, and ensure beam is on the detector.")
-            self.Minv = None
+    def recalibrate_sum_baseline(self):
+        print("\n--- Recalibrating Signal Baseline ---")
+        print("Measuring current beam power...")
+        _, _, new_sum = self.read_kqd_avg()
+        if new_sum is None:
+            raise RuntimeError("Could not get a reading. Please ensure beam is on the detector.")
+        self.baseline_sum = new_sum
+        print(f"New baseline sum established: {self.baseline_sum:.4f}")
 
-    def manual_y(self, distance, relative=True):
-        """Manually move the goniometer motor (Y-axis)."""
-        if not self.km:
-            print("Error: Goniometer not connected.")
-            return
+    def _scan_actuator_response(self, actuator_name, move_func, get_pos_func, start_pos, step_size, max_steps, sum_threshold):
+        positions, x_readings, y_readings = [], [], []
+        print(f"Scanning {actuator_name.upper()} actuator...")
+        for i in range(max_steps + 1):
+            current_pos = start_pos + i * step_size
+            move_func(current_pos)
+            time.sleep(0.1) # Wait for move to settle
+            
+            x, y, current_sum = self.read_kqd_avg(n=5)
+            if x is None or current_sum < sum_threshold:
+                print(f"  - Scan stopped at step {i}: Signal lost or below threshold.", file=sys.stderr)
+                break
+
+            positions.append(current_pos)
+            x_readings.append(x)
+            y_readings.append(y)
+            print(f"  - Step {i}: Pos={current_pos}, Reading=({x:.4f}, {y:.4f})")
+        
+        move_func(start_pos) # Return to start
+        time.sleep(0.2)
+        
+        if len(positions) < 2:
+            raise RuntimeError(f"Scan for {actuator_name.upper()} failed to collect enough data points.")
+
+        slope_x = np.polyfit(positions, x_readings, 1)[0]
+        slope_y = np.polyfit(positions, y_readings, 1)[0]
+        return slope_x, slope_y
+
+    def calibrate(self, tic_step_size=10, km_step_size=400, max_scan_steps=20, sum_drop_ratio=0.7):
+        print("\n--- Starting Scan-Based System Calibration ---")
+        if not self.kqd or not self.tic or not self.km:
+            raise ConnectionError("Not all slow steering hardware is connected for calibration.")
+
+        print("Taking initial neutral reading...")
+        x0, y0, sum0 = self.read_kqd_avg()
+        if x0 is None:
+            raise RuntimeError("Calibration failed: Could not get an initial KQD reading.")
+        
+        self.baseline_sum = sum0
+        scan_sum_threshold = self.baseline_sum * sum_drop_ratio
+        print(f"Initial Neutral QD: ({x0:.6f}, {y0:.6f})")
+        print(f"Baseline Sum: {self.baseline_sum:.4f}, Scan Stop Threshold: {scan_sum_threshold:.4f}")
+
         try:
-            if relative:
-                print(f"Moving goniometer (Y) by {distance} steps...")
-                self.km.move_by(distance)
-            else:
-                print(f"Moving goniometer (Y) to position {distance}...")
-                self.km.move_to(distance)
+            tic_start_pos = self.tic.get_current_position()
+            tic_slope_x, tic_slope_y = self._scan_actuator_response(
+                'tic', self.tic.set_target_position, self.tic.get_current_position,
+                tic_start_pos, tic_step_size, max_scan_steps, scan_sum_threshold
+            )
+            print(f"Tic Influence (Slope): dX/dTic={tic_slope_x:.6f}, dY/dTic={tic_slope_y:.6f}")
+
+            km_start_pos = self.km.get_position()
             self.km.wait_move()
-            new_pos = self.km.get_position()
-            print(f"Goniometer move complete. New position: {new_pos}")
-        except Exception as e:
-            print(f"An error occurred during goniometer move: {e}")
+            km_slope_x, km_slope_y = self._scan_actuator_response(
+                'km', self.km.move_to, self.km.get_position,
+                km_start_pos, km_step_size, max_scan_steps, scan_sum_threshold
+            )
+            print(f"KM Influence (Slope): dX/dKM={km_slope_x:.6f}, dY/dKM={km_slope_y:.6f}")
 
-    def manual_x(self, distance, relative=True):
-        """Manually move the Tic stepper motor (X-axis)."""
-        if not self.tic:
-            print("Error: Tic controller not connected.")
-            return
-        try:
-            if relative:
-                current_pos = self.tic.get_current_position()
-                target_pos = current_pos + distance
-                print(f"Moving Tic stage (X) by {distance} steps to position {target_pos}...")
-            else:
-                target_pos = distance
-                print(f"Moving Tic stage (X) to absolute position {target_pos}...")
-            self.tic.set_target_position(target_pos)
-            time.sleep(0.1 + abs(distance) / 20000)
-            new_pos = self.tic.get_current_position()
-            print(f"Tic move complete. New position: {new_pos}")
-        except Exception as e:
-            print(f"An error occurred during Tic move: {e}")
+            M = np.array([[tic_slope_x, km_slope_x], [tic_slope_y, km_slope_y]])
+            print("\nCalibration Matrix M (from slopes):\n", M)
+            self.Minv = np.linalg.inv(M)
+            print("\nInverse Calibration Matrix Minv:\n", self.Minv)
+            print("Calibration successful.")
+
+        except np.linalg.LinAlgError:
+            self.Minv = None
+            raise RuntimeError("Calibration failed: Matrix is singular (actuator moves had no effect).")
+        except RuntimeError as e:
+            self.Minv = None
+            raise
 
     def run_slow_feedback_loop(self):
-        """
-        Runs the main PID feedback loop using stepper motors for SLOW alignment.
-        """
-        # A safety check to ensure the system has been calibrated before starting.
-        if self.Minv is None:
-            print("Cannot start feedback loop: system is not calibrated.")
-            return
+        if self.Minv is None: return "error_not_calibrated"
+        if self.baseline_sum is None: return "error_no_baseline"
+
+        sum_threshold = self.baseline_sum * 0.5
+        print(f"\nStarting feedback loop. Stop threshold: {sum_threshold:.4f}")
+
+        while not self.stop_loop_event.is_set():
+            r = self.kqd.get_readings()
+            if r is None:
+                time.sleep(0.2)
+                continue
+
+            if r.sum < sum_threshold:
+                print("\nBEAM SIGNAL LOST. Halting loop.")
+                self.pid_x.reset()
+                self.pid_y.reset()
+                return "stopped_beam_lost"
+
+            x_err, y_err = r.xdiff, r.ydiff
+            dx = self.pid_x.compute(x_err)
+            dy = self.pid_y.compute(y_err)
+
+            d_actuator = self.Minv @ np.array([dx, dy])
+            d_tic, d_gon = d_actuator[0], d_actuator[1]
+            
+            current_tic_pos = self.tic.get_current_position()
+            self.tic.set_target_position(current_tic_pos + int(d_tic))
+            self.km.move_by(int(d_gon))
+            
+            print(f"Err:[{x_err:.4f},{y_err:.4f}] | Sum:{r.sum:.3f} | Corr:[{d_tic:.2f},{d_gon:.2f}]", end='\r')
+            time.sleep(0.1)
         
-        # Wait for the user to confirm before starting the active loop.
-        input("\nPress Enter to start the SLOW PID feedback loop (Ctrl+C to stop)...")
-        print("Starting slow feedback loop...")
+        return "stopped_by_user"
+
+    def manual_x(self, distance, relative=True):
+        if not self.tic: raise ConnectionError("Tic controller not connected.")
+        if relative:
+            target_pos = self.tic.get_current_position() + distance
+        else:
+            target_pos = distance
+        self.tic.set_target_position(target_pos)
+        time.sleep(0.05)
+
+    def manual_y(self, distance, relative=True):
+        if not self.km: raise ConnectionError("Kinesis motor not connected.")
+        if relative:
+            self.km.move_by(distance)
+        else:
+            self.km.move_to(distance)
+        self.km.wait_move()
         
-        try:
-            # This is the main control loop that runs continuously.
-            while True:
-                # Step 1: Get the current beam position error from the Quadrant Detector.
-                reading = self.kqd.get_readings()
-                x_err, y_err = reading.xdiff, reading.ydiff
+    def set_tic_soft_limits(self, min_pos, max_pos):
+        if not self.tic: raise ConnectionError("Tic controller not connected.")
+        self.tic.set_setting("min_target_position", int(min_pos))
+        self.tic.set_setting("max_target_position", int(max_pos))
 
-                # Step 2: Calculate the desired correction using the PID controllers.
-                # The negative sign ensures the correction moves the beam *towards* the target (zero error).
-                dx = -self.pid_x.compute(x_err)
-                dy = -self.pid_y.compute(y_err)
+    def clear_tic_soft_limits(self):
+        if not self.tic: raise ConnectionError("Tic controller not connected.")
+        self.tic.set_setting("min_target_position", -2147483648)
+        self.tic.set_setting("max_target_position", 2147483647)
 
-                # Step 3: Convert the desired correction from detector space (dx, dy) to actuator space (motor steps).
-                # This uses matrix multiplication with the inverse calibration matrix.
-                d_actuator = self.Minv @ np.array([dx, dy])
-                dtheta_tic, dtheta_gon = d_actuator[0], d_actuator[1]
-                
-                # Step 4: Command the motors to move by the calculated amounts.
-                # For the Tic stepper, we calculate an absolute target position for smoother movement.
-                current_tic_pos = self.tic.get_current_position()
-                new_tic_target = current_tic_pos + int(dtheta_tic)
-                self.tic.set_target_position(new_tic_target)
-                
-                # The Kinesis motor is commanded with a relative move.
-                self.km.move_by(int(dtheta_gon))
+    def set_km_soft_limits(self, min_pos, max_pos):
+        if not self.km: raise ConnectionError("Kinesis motor not connected.")
+        self.km.set_position_software_limits(min_pos, max_pos)
 
-                # Step 5: Print the current status to the console without creating new lines.
-                print(f"Err:[{x_err:.4f},{y_err:.4f}] | Corr:[{dtheta_tic:.2f},{dtheta_gon:.2f}]", end='\r')
-                
-                # Step 6: Wait for a short period before the next loop iteration.
-                # This prevents overwhelming the hardware and allows time for physical movement.
-                time.sleep(0.1)
-                
-        except KeyboardInterrupt:
-            # This block catches a Ctrl+C press from the user to stop the loop gracefully.
-            print("\nFeedback loop stopped by user.")
+    def clear_km_soft_limits(self):
+        if not self.km: raise ConnectionError("Kinesis motor not connected.")
+        min_limit, max_limit = self.km.get_travel_range()
+        self.km.set_position_software_limits(min_limit, max_limit)
 

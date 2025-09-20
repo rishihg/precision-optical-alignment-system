@@ -1,25 +1,25 @@
 import sys
 from optical_aligner import OpticalAligner
+from pylablib.devices import Thorlabs
 
 # --- CONFIGURATION ---
-# UPDATE THESE TO MATCH YOUR SYSTEM'S DEVICE PATHS/SYMLINKS
-KQD_PORT = "/dev/kqd"      # Symlink for the Quadrant Detector
-KM_PORT = "/dev/kinesis"   # Symlink for the Kinesis Motor (Goniometer)
+# UPDATE THESE TO MATCH YOUR SYSTEM'S DEVICE PATHS
+KQD_PORT = "/dev/ttyUSB0" # Example for Linux
+KM_PORT = "/dev/ttyUSB1"  # Example for Linux
 # ---------------------
 
 def main_menu(aligner):
     """
     Displays an interactive menu for direct manual control of the stepper motors.
-    Allows for quick switching between axes.
     """
-    active_axis = 'x'  # Start with the X-axis as the active one
+    active_axis = 'x'
 
     while True:
         print("\n--- Manual Steering Control ---")
-        # Display live readings to aid manual alignment
         try:
             r = aligner.kqd.get_readings()
-            print(f"Live Position | X: {r.xdiff:.5f}, Y: {r.ydiff:.5f}")
+            if r:
+                print(f"Live Position | X: {r.xdiff:.5f}, Y: {r.ydiff:.5f}, Sum: {r.sum:.4f}")
         except Exception as e:
             print(f"Could not get live reading: {e}")
 
@@ -41,33 +41,32 @@ def main_menu(aligner):
             distance = int(command)
             if active_axis == 'x':
                 aligner.manual_x(distance, relative=True)
-            else:  # active_axis must be 'y'
+                print(f"Moved X-axis by {distance} steps.")
+            else:
                 aligner.manual_y(distance, relative=True)
+                print(f"Moved Y-axis by {distance} steps.")
         except ValueError:
             print("Invalid input. Please enter a whole number, 's', or 'q'.")
         except Exception as e:
             print(f"An error occurred during move: {e}")
-
 
 def main():
     """
     Main function to initialize and run the manual steering interface.
     """
     print("--- Starting Manual Steering Routine ---")
-    aligner = OpticalAligner(kqd_port=KQD_PORT, km_port=KM_PORT)
-
     try:
-        # Connect to hardware needed for manual slow steering
+        aligner = OpticalAligner(kqd_port=KQD_PORT, km_port=KM_PORT)
         aligner.connect_slow_steering()
-        # Start the interactive menu
         main_menu(aligner)
 
     except Exception as e:
-        print(f"\nA critical error occurred: {e}")
+        print(f"\nA critical error occurred: {e}", file=sys.stderr)
         sys.exit(1)
     finally:
         print("\nApplication shutting down.")
-        aligner.disconnect_slow_steering()
+        if 'aligner' in locals() and aligner.km:
+            aligner.disconnect_slow_steering()
 
 if __name__ == "__main__":
     main()
