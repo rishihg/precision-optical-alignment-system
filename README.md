@@ -1,32 +1,84 @@
-### Optical Beam Alignment Control System
-This project contains a suite of Python tools for controlling an automated optical alignment system. It provides separate interfaces for slow, high-precision alignment using stepper motors and fast, real-time beam stabilization using a KPA101 piezo controller and a quadrant detector.
+# Precision Optical Alignment System
 
-### Features
-**Fast Steering Mode**: Utilizes the hardware's internal closed-loop feedback for real-time beam stabilization with interactive mode and settings control.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Slow Steering Mode**: A software-based PID control loop for automated, high-precision alignment using stepper motors. Includes an automated calibration routine.
+Automated optical alignment system combining **fast steering** (piezo + quadrant detector) and **slow steering** (stepper/motorized stages) with Python scripts and GUI.
 
-**Manual Control**: Direct command-line and GUI interfaces for manual control of stepper motors for coarse alignment and setup.
+---
 
-**Robust Hardware Handling**: Automatically discovers devices by serial number, preventing connection issues from changing USB ports.
+## Table of Contents
 
-### Hardware & Software
-This system is designed around a specific set of hardware components and Python libraries.
+- [Overview](#overview)  
+- [Features](#features)  
+- [Hardware Requirements](#hardware-requirements)  
+- [Software Requirements](#software-requirements)  
+- [Project Structure](#project-structure)  
+- [Usage](#usage)  
+- [Calibration](#calibration)  
+- [Example Workflow](#example-workflow)  
+- [Contributing](#contributing)  
+- [License](#license)  
 
-**Hardware Used**
-Fast Actuator / Detector: Thorlabs KPA101 K-Cube Piezo Driver & Quadrant Detector. This single unit provides both the high-speed piezo mirror control and the beam position sensing required for the fast feedback loop.
+---
 
-Slow X-Axis Actuator: A standard stepper motor controlled by a Pololu Tic USB Stepper Motor Controller.
+## Overview
 
-Slow Y-Axis Actuator: A goniometer or linear stage driven by a Thorlabs Kinesis Motor Controller (e.g., KDC101 Servoc controller).
+This project provides Python tools to automate optical beam alignment:
 
-Host Computer: A Raspberry Pi 5 or a standard desktop computer running Python.
+- **Fast Steering**: Real-time correction using KPA101 piezo + quadrant detector.  
+- **Slow Steering**: Coarse alignment using stepper/motorized stages with PID control.  
+- **Manual Control**: CLI and GUI options.  
+- **USB Device Auto-Detection**: Maps hardware to `/dev/ttyUSB*` using product names or serials.
 
-**Software & Libraries**
-Python 3: The core programming language.
+The system reduces manual intervention and stabilizes optical beams over time.
 
-pylablib: For communication with Thorlabs Kinesis devices (KPA101 and Kinesis Motor).
+---
 
-ticlib: For communication with the Pololu Tic stepper motor controller.
+## Features
 
-numpy: For numerical operations, particularly matrix math in the calibration routine.
+- Fast feedback loop for optical beam stabilization.  
+- Automated slow-axis alignment via PID.  
+- Manual CLI control and GUI interface.  
+- Automatic device detection.  
+- Modular design for easy hardware replacement or expansion.
+
+---
+
+## Hardware Requirements
+
+| Component | Purpose |
+|-----------|---------|
+| Thorlabs KPA101 | Piezo + Quadrant Detector for fast steering |
+| Thorlabs KDC101 | Motorized slow steering |
+| Pololu Tic USB Stepper | Stepper motor control for slow axes |
+| Raspberry Pi / Desktop | Host computer running Python scripts |
+
+---
+
+## Software Requirements
+
+- Python 3.x  
+- Python libraries:
+  - `numpy`
+  - `pylablib` (Thorlabs hardware interface)
+  - `ticlib` (Pololu Tic stepper interface)
+  - `pyserial` (USB-serial communication)
+  - GUI library (Tkinter or PyQt, depending on `gui_app.py`)
+
+---
+
+## Project Structure
+
+| File | Description |
+|------|-------------|
+| `fast_steering.py` | Fast closed-loop feedback control using piezo + detector |
+| `slow_steering.py` | PID-controlled slow steering via stepper/motorized stages |
+| `optical_aligner.py` | Combines fast and slow steering routines for complete alignment |
+| `manual_steering.py` | CLI for manual axis adjustments |
+| `pid_controller.py` | Generic PID control module |
+| `gui_app.py` | GUI for real-time control and monitoring |
+| `usbfinder.py` | Maps USB devices to `/dev/ttyUSB*` by product name/serial |
+| `instruction.txt` | Setup and usage instructions |
+| `config/` | Configuration files for device IDs, calibration, and default settings |
+
+---
