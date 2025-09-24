@@ -1,12 +1,12 @@
 import sys
 import time
 from optical_aligner import OpticalAligner
-from pylablib.devices import Thorlabs
+from usbfinder import USBTTYFinder
 
 # --- CONFIGURATION ---
-# UPDATE THESE TO MATCH YOUR SYSTEM'S DEVICE PATHS
-KQD_PORT = "/dev/ttyUSB0" # Example for Linux
-KM_PORT = "/dev/ttyUSB1"  # Example for Linux
+usb = USBTTYFinder()
+KQD_PORT = usb.find_by_product("Position Aligner")[0]
+KM_PORT = usb.find_by_product("Brushed Motor Controller")[0]
 # ---------------------
 
 def manage_soft_limits(aligner):
@@ -49,7 +49,6 @@ def main():
     """Main function to run the slow optical aligner."""
     print("--- Starting Slow Steering Routine ---")
     try:
-        # Use the hardcoded ports from the configuration section
         aligner = OpticalAligner(kqd_port=KQD_PORT, km_port=KM_PORT)
         aligner.connect_slow_steering()
 
@@ -70,7 +69,13 @@ def main():
             elif choice == '3':
                 aligner.calibrate()
             elif choice == '4':
-                aligner.run_slow_feedback_loop()
+                try:
+                    gain_str = input(f"Enter master loop gain [default: 1.0]: ")
+                    loop_gain = float(gain_str) if gain_str else 1.0
+                except ValueError:
+                    print("Invalid input. Using default gain of 1.0.")
+                    loop_gain = 1.0
+                aligner.run_slow_feedback_loop(loop_gain=loop_gain)
             elif choice == '5':
                 aligner.recalibrate_sum_baseline()
             elif choice == '6':

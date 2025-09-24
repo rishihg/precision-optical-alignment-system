@@ -1,11 +1,12 @@
 import sys
 from optical_aligner import OpticalAligner
 from pylablib.devices import Thorlabs
+from usbfinder import USBTTYFinder
 
 # --- CONFIGURATION ---
-# UPDATE THESE TO MATCH YOUR SYSTEM'S DEVICE PATHS
-KQD_PORT = "/dev/ttyUSB0" # Example for Linux
-KM_PORT = "/dev/ttyUSB1"  # Example for Linux
+usb = USBTTYFinder()
+KQD_PORT = usb.find_by_product("Position Aligner")[0]
+KM_PORT = usb.find_by_product("Brushed Motor Controller")[0]
 # ---------------------
 
 def main_menu(aligner):

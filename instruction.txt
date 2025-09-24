@@ -1,0 +1,6 @@
+Activate virtual environment:
+source /home/pi/Projects/steering_system/.venv/bin/activate
+
+Install these pacakages before installing pylablib:
+sudo apt-get install qtbase5-dev pyqt5-dev-tools
+sudo apt-get install python3-pyqt5

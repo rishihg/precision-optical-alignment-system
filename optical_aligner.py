@@ -5,6 +5,7 @@ from ticlib import TicUSB
 from pid_controller import PID
 import sys
 import threading
+import usb.core # Added to catch the specific USB error
 
 class OpticalAligner:
     """
@@ -64,16 +65,34 @@ class OpticalAligner:
         print("Slow steering hardware ready.")
 
     def disconnect_slow_steering(self):
+        """
+        Safely disconnects all hardware used for slow steering with robust error handling.
+        """
         print("\n--- Disconnecting Slow Steering Hardware ---")
+        
         if self.tic:
-            self.tic.deenergize()
-            print("Tic controller de-energized.")
+            try:
+                self.tic.deenergize()
+                print("Tic controller de-energized.")
+            except usb.core.USBError as e:
+                print(f"Could not de-energize Tic. Device may have disconnected: {e}")
+            except Exception as e:
+                print(f"An unexpected error occurred with Tic controller: {e}")
+
         if self.km and self.km.is_opened():
-            self.km.close()
-            print("Kinesis Motor connection closed.")
+            try:
+                self.km.close()
+                print("Kinesis Motor connection closed.")
+            except Exception as e:
+                 print(f"An error occurred disconnecting Kinesis Motor: {e}")
+
         if self.kqd and self.kqd.is_opened():
-            self.kqd.close()
-            print("KQD connection closed.")
+            try:
+                self.kqd.close()
+                print("KQD connection closed.")
+            except Exception as e:
+                 print(f"An error occurred disconnecting KQD: {e}")
+
         self.kqd, self.km, self.tic = None, None, None
         print("Slow steering hardware disconnected safely.")
 
@@ -193,9 +212,11 @@ class OpticalAligner:
         return {'velocity': vel_params.max_velocity}
 
     def set_km_settings(self, velocity):
-        if not self.km: raise ConnectionError("Kinesis Motor not connected.")
+        """Sets the velocity for the Kinesis motor."""
+        if not self.km: 
+            raise ConnectionError("Kinesis Motor not connected.")
         current_accel = self.km.get_velocity_parameters().acceleration
-        self.km.set_velocity_parameters(max_velocity=velocity, acceleration=current_accel)
+        self.km.setup_velocity(max_velocity=velocity, acceleration=current_accel)
 
     def manage_slow_steering_settings(self):
         if not self.tic or not self.km:
@@ -234,77 +255,70 @@ class OpticalAligner:
             print(f"\nAn error occurred during settings update: {e}", file=sys.stderr)
 
     def read_kqd_avg(self, n=20, delay=0.05):
-        if not self.kqd:
-            print("Error: KQD not connected, can't take reading.", file=sys.stderr)
-            return None, None, None
+        if not self.kqd: return None, None, None
         xs, ys, sums = [], [], []
-        for i in range(n):
+        for _ in range(n):
             try:
                 r = self.kqd.get_readings()
-                if r is not None:
+                if r:
                     xs.append(r.xdiff)
                     ys.append(r.ydiff)
                     sums.append(r.sum)
-                else:
-                    pass
                 time.sleep(delay)
-            except Exception as e:
-                print(f"Error during KQD read on attempt {i+1}/{n}: {e}", file=sys.stderr)
-        if not xs or not ys:
-            return None, None, None
+            except Exception:
+                pass
+        if not xs: return None, None, None
         return np.mean(xs), np.mean(ys), np.mean(sums)
 
     def recalibrate_sum_baseline(self):
-        print("\n--- Recalibrating Signal Baseline ---")
-        print("Measuring current beam power...")
+        print("\nRecalibrating Signal Baseline...")
         _, _, new_sum = self.read_kqd_avg()
         if new_sum is None:
             raise RuntimeError("Could not get a reading. Please ensure beam is on the detector.")
         self.baseline_sum = new_sum
-        print(f"New baseline sum established: {self.baseline_sum:.4f}")
+        print(f"New baseline sum: {self.baseline_sum:.4f}")
 
     def _scan_actuator_response(self, actuator_name, move_func, get_pos_func, start_pos, step_size, max_steps, sum_threshold):
         positions, x_readings, y_readings = [], [], []
-        print(f"Scanning {actuator_name.upper()} actuator...")
+        print(f"Scanning {actuator_name.upper()}...")
         for i in range(max_steps + 1):
             current_pos = start_pos + i * step_size
             move_func(current_pos)
-            time.sleep(0.1) # Wait for move to settle
+            if actuator_name == 'km': self.km.wait_move()
+            time.sleep(0.1)
             
             x, y, current_sum = self.read_kqd_avg(n=5)
             if x is None or current_sum < sum_threshold:
-                print(f"  - Scan stopped at step {i}: Signal lost or below threshold.", file=sys.stderr)
+                print(f"  - Scan stopped at step {i}: Signal lost or below threshold.")
                 break
-
             positions.append(current_pos)
             x_readings.append(x)
             y_readings.append(y)
             print(f"  - Step {i}: Pos={current_pos}, Reading=({x:.4f}, {y:.4f})")
         
-        move_func(start_pos) # Return to start
+        move_func(start_pos)
+        if actuator_name == 'km': self.km.wait_move()
         time.sleep(0.2)
         
         if len(positions) < 2:
-            raise RuntimeError(f"Scan for {actuator_name.upper()} failed to collect enough data points.")
-
+            raise RuntimeError(f"Scan for {actuator_name.upper()} failed.")
+        
         slope_x = np.polyfit(positions, x_readings, 1)[0]
         slope_y = np.polyfit(positions, y_readings, 1)[0]
         return slope_x, slope_y
 
     def calibrate(self, tic_step_size=10, km_step_size=400, max_scan_steps=20, sum_drop_ratio=0.7):
         print("\n--- Starting Scan-Based System Calibration ---")
-        if not self.kqd or not self.tic or not self.km:
-            raise ConnectionError("Not all slow steering hardware is connected for calibration.")
+        if not all([self.kqd, self.tic, self.km]):
+            raise ConnectionError("Not all hardware connected for calibration.")
 
-        print("Taking initial neutral reading...")
         x0, y0, sum0 = self.read_kqd_avg()
         if x0 is None:
             raise RuntimeError("Calibration failed: Could not get an initial KQD reading.")
         
         self.baseline_sum = sum0
         scan_sum_threshold = self.baseline_sum * sum_drop_ratio
-        print(f"Initial Neutral QD: ({x0:.6f}, {y0:.6f})")
-        print(f"Baseline Sum: {self.baseline_sum:.4f}, Scan Stop Threshold: {scan_sum_threshold:.4f}")
+        print(f"Initial Neutral QD: ({x0:.6f}, {y0:.6f}), Baseline Sum: {self.baseline_sum:.4f}")
 
         try:
             tic_start_pos = self.tic.get_current_position()
@@ -312,44 +326,45 @@ class OpticalAligner:
                 'tic', self.tic.set_target_position, self.tic.get_current_position,
                 tic_start_pos, tic_step_size, max_scan_steps, scan_sum_threshold
             )
-            print(f"Tic Influence (Slope): dX/dTic={tic_slope_x:.6f}, dY/dTic={tic_slope_y:.6f}")
 
             km_start_pos = self.km.get_position()
-            self.km.wait_move()
             km_slope_x, km_slope_y = self._scan_actuator_response(
                 'km', self.km.move_to, self.km.get_position,
                 km_start_pos, km_step_size, max_scan_steps, scan_sum_threshold
             )
-            print(f"KM Influence (Slope): dX/dKM={km_slope_x:.6f}, dY/dKM={km_slope_y:.6f}")
 
             M = np.array([[tic_slope_x, km_slope_x], [tic_slope_y, km_slope_y]])
-            print("\nCalibration Matrix M (from slopes):\n", M)
+            print("\nCalibration Matrix M:\n", M)
             self.Minv = np.linalg.inv(M)
             print("\nInverse Calibration Matrix Minv:\n", self.Minv)
             print("Calibration successful.")
 
-        except np.linalg.LinAlgError:
+        except (np.linalg.LinAlgError, RuntimeError) as e:
             self.Minv = None
-            raise RuntimeError("Calibration failed: Matrix is singular (actuator moves had no effect).")
-        except RuntimeError as e:
-            self.Minv = None
-            raise
+            raise RuntimeError(f"Calibration failed: {e}")
 
-    def run_slow_feedback_loop(self):
+    def run_slow_feedback_loop(self, loop_gain=1.0):
         if self.Minv is None: return "error_not_calibrated"
         if self.baseline_sum is None: return "error_no_baseline"
 
-        sum_threshold = self.baseline_sum * 0.5
-        print(f"\nStarting feedback loop. Stop threshold: {sum_threshold:.4f}")
+        print(f"\nStarting feedback loop with gain={loop_gain}.")
 
         while not self.stop_loop_event.is_set():
+            sum_threshold = self.baseline_sum * 0.5
+            
             r = self.kqd.get_readings()
             if r is None:
                 time.sleep(0.2)
                 continue
 
             if r.sum < sum_threshold:
-                print("\nBEAM SIGNAL LOST. Halting loop.")
+                print(f"\nBEAM SIGNAL LOST (Sum: {r.sum:.4f} < Threshold: {sum_threshold:.4f}).")
+                
+                print("Sending immediate halt command to motors.")
+                self.tic.halt_and_hold()
+                self.km.stop(wait=False)
+                
+                print("Resetting PID controllers and halting loop.")
                 self.pid_x.reset()
                 self.pid_y.reset()
                 return "stopped_beam_lost"
@@ -359,13 +374,15 @@ class OpticalAligner:
             dy = self.pid_y.compute(y_err)
 
             d_actuator = self.Minv @ np.array([dx, dy])
-            d_tic, d_gon = d_actuator[0], d_actuator[1]
+            
+            final_d_tic = d_actuator[0] * loop_gain
+            final_d_gon = d_actuator[1] * loop_gain
             
             current_tic_pos = self.tic.get_current_position()
-            self.tic.set_target_position(current_tic_pos + int(d_tic))
-            self.km.move_by(int(d_gon))
+            self.tic.set_target_position(current_tic_pos + int(final_d_tic))
+            self.km.move_by(int(final_d_gon))
             
-            print(f"Err:[{x_err:.4f},{y_err:.4f}] | Sum:{r.sum:.3f} | Corr:[{d_tic:.2f},{d_gon:.2f}]", end='\r')
+            print(f"Err:[{x_err:.4f},{y_err:.4f}] | Sum:{r.sum:.3f} | Thr:{sum_threshold:.3f} | Corr:[{final_d_tic:.2f},{final_d_gon:.2f}]", end='\r')
             time.sleep(0.1)
         
         return "stopped_by_user"
@@ -376,16 +393,30 @@ class OpticalAligner:
             target_pos = self.tic.get_current_position() + distance
         else:
             target_pos = distance
+        print(f"X-Axis Target: {target_pos}")
         self.tic.set_target_position(target_pos)
         time.sleep(0.05)
 
     def manual_y(self, distance, relative=True):
-        if not self.km: raise ConnectionError("Kinesis motor not connected.")
+        """
+        Manually moves the Y-axis Kinesis motor.
+        Uses absolute moves to prevent issues with relative negative moves.
+        """
+        if not self.km: 
+            raise ConnectionError("Kinesis motor not connected.")
+
         if relative:
-            self.km.move_by(distance)
+            # THE FIX: Calculate the absolute target position instead of using move_by()
+            # This is more robust and avoids potential driver bugs with negative values.
+            current_pos = self.km.get_position()
+            target_pos = current_pos + distance
+            self.km.move_to(target_pos)
         else:
+            # Absolute moves are already robust
             self.km.move_to(distance)
+        
         self.km.wait_move()
+        print(f"Y-Axis Final Position: {self.km.get_position()}")
         
     def set_tic_soft_limits(self, min_pos, max_pos):
         if not self.tic: raise ConnectionError("Tic controller not connected.")
