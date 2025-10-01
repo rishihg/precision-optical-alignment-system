@@ -1,5 +1,4 @@
 import sys
-import time
 from optical_aligner import OpticalAligner
 from usbfinder import USBTTYFinder
 
@@ -9,7 +8,7 @@ try:
     KQD_PORT = usb.find_by_product("Position Aligner")[0]
     KM_PORT = usb.find_by_product("Brushed Motor Controller")[0]
 except Exception as e:
-    print(f"CRITICAL ERROR: Could not find required hardware. Check connections.")
+    print(f"CRITICAL ERROR: Could not find required hardware for slow steering. Check connections.")
     print(f"Details: {e}")
     sys.exit(1)
 # ---------------------
@@ -18,7 +17,11 @@ def manage_soft_limits(aligner):
     """Interactive menu for managing soft limits for both axes."""
     while True:
         print("\n--- Soft Limits Management ---")
-        print("1. Set X-Axis Limits\n2. Clear X-Axis Limits\n3. Set Y-Axis Limits\n4. Clear Y-Axis Limits\n5. Return to Main Menu")
+        print("1. Set X-Axis Limits")
+        print("2. Clear X-Axis Limits")
+        print("3. Set Y-Axis Limits")
+        print("4. Clear Y-Axis Limits")
+        print("5. Return to Main Menu")
         choice = input("Select an option: ")
         try:
             if choice == '1':
@@ -49,9 +52,10 @@ def manage_soft_limits(aligner):
 def main():
     """Main function to run the slow optical aligner."""
     print("--- Starting Slow Steering Routine ---")
+    aligner = None
     try:
         aligner = OpticalAligner(kqd_port=KQD_PORT, km_port=KM_PORT)
-        aligner.connect_slow_steering()
+        aligner.connect_all()
 
         while True:
             print("\n--- Main Menu ---")
@@ -68,7 +72,8 @@ def main():
             choice = input("Select an option: ")
 
             if choice == '1':
-                aligner.manage_slow_steering_settings()
+                # This would need a full CLI implementation similar to _manage_output_settings
+                print("Note: Full settings management is best done via the GUI.")
             elif choice == '2':
                 manage_soft_limits(aligner)
             elif choice == '3':
@@ -106,8 +111,8 @@ def main():
         sys.exit(1)
     finally:
         print("\nApplication shutting down.")
-        if 'aligner' in locals() and aligner.km:
-            aligner.disconnect_slow_steering()
+        if aligner:
+            aligner.disconnect_all()
 
 if __name__ == "__main__":
     main()

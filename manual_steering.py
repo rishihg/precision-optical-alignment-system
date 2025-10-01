@@ -1,12 +1,16 @@
 import sys
 from optical_aligner import OpticalAligner
-from pylablib.devices import Thorlabs
 from usbfinder import USBTTYFinder
 
 # --- CONFIGURATION ---
-usb = USBTTYFinder()
-KQD_PORT = usb.find_by_product("Position Aligner")[0]
-KM_PORT = usb.find_by_product("Brushed Motor Controller")[0]
+try:
+    usb = USBTTYFinder()
+    KQD_PORT = usb.find_by_product("Position Aligner")[0]
+    KM_PORT = usb.find_by_product("Brushed Motor Controller")[0]
+except Exception as e:
+    print(f"CRITICAL ERROR: Could not find required hardware for manual steering. Check connections.")
+    print(f"Details: {e}")
+    sys.exit(1)
 # ---------------------
 
 def main_menu(aligner):
@@ -56,9 +60,10 @@ def main():
     Main function to initialize and run the manual steering interface.
     """
     print("--- Starting Manual Steering Routine ---")
+    aligner = None
     try:
         aligner = OpticalAligner(kqd_port=KQD_PORT, km_port=KM_PORT)
-        aligner.connect_slow_steering()
+        aligner.connect_all()
         main_menu(aligner)
 
     except Exception as e:
@@ -66,8 +71,8 @@ def main():
         sys.exit(1)
     finally:
         print("\nApplication shutting down.")
-        if 'aligner' in locals() and aligner.km:
-            aligner.disconnect_slow_steering()
+        if aligner:
+            aligner.disconnect_all()
 
 if __name__ == "__main__":
     main()
