@@ -208,12 +208,13 @@ class SlowSteeringWindow(tk.Toplevel):
 
         ttk.Label(loop_frame, textvariable=self.master_app.loop_status_var).pack(pady=2)
 
-        # Load current settings when window opens
-        self.after(100, self.master_app._get_slow_settings)
+        
+        
 
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         
     def _on_closing(self):
+        self.master_app._cancel_window_callbacks('slow')
         self.master_app.slow_steering_window = None
         self.destroy()
 
@@ -275,12 +276,12 @@ class FastSteeringWindow(tk.Toplevel):
         ttk.Button(params_frame, text="Apply Settings", 
                   command=self.master_app._apply_fast_settings).grid(row=5, column=1, pady=10)
 
-        # Load current settings when window opens
-        self.after(100, self.master_app._get_fast_settings)
+        
 
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         
     def _on_closing(self):
+        self.master_app._cancel_window_callbacks('fast')
         self.master_app.fast_steering_window = None
         self.destroy()
 
@@ -327,6 +328,11 @@ class App(tk.Tk):
 
         self.aligner = None 
         self.is_connected = False
+
+        # Add locks for thread safety
+        self._window_operation_lock = threading.Lock()
+        self._settings_load_lock = threading.Lock()
+        self._window_after_ids = {}
         
         self.plotting_window = None
         self.slow_steering_window = None
@@ -448,22 +454,32 @@ class App(tk.Tk):
             self.simulation_var.set(not self.simulation_var.get())
             
     def _open_slow_steering_window(self):
-        if self.slow_steering_window is None or not self.slow_steering_window.winfo_exists():
-            self.slow_steering_window = SlowSteeringWindow(self, self.aligner)
-            self.slow_steering_window.lift()
-            self.slow_steering_window.focus_force()
-        else:
-            self.slow_steering_window.lift()
-            self.slow_steering_window.focus_force()
+        with self._window_operation_lock:
+            if self.slow_steering_window is None or not self.slow_steering_window.winfo_exists():
+                self.slow_steering_window = SlowSteeringWindow(self, self.aligner)
+                self.slow_steering_window.lift()
+                self.slow_steering_window.focus_force()
+                
+                self._cancel_window_callbacks('slow')
+                after_id = self.after(150, lambda: self._load_window_settings('slow'))
+                self._window_after_ids['slow'] = after_id
+            else:
+                self.slow_steering_window.lift()
+                self.slow_steering_window.focus_force()
             
     def _open_fast_steering_window(self):
-        if self.fast_steering_window is None or not self.fast_steering_window.winfo_exists():
-            self.fast_steering_window = FastSteeringWindow(self, self.aligner)
-            self.fast_steering_window.lift()
-            self.fast_steering_window.focus_force()
-        else:
-            self.fast_steering_window.lift()
-            self.fast_steering_window.focus_force()
+        with self._window_operation_lock:
+            if self.fast_steering_window is None or not self.fast_steering_window.winfo_exists():
+                self.fast_steering_window = FastSteeringWindow(self, self.aligner)
+                self.fast_steering_window.lift()
+                self.fast_steering_window.focus_force()
+                
+                self._cancel_window_callbacks('fast')
+                after_id = self.after(150, lambda: self._load_window_settings('fast'))
+                self._window_after_ids['fast'] = after_id
+            else:
+                self.fast_steering_window.lift()
+                self.fast_steering_window.focus_force()
             
     def _open_manual_control_window(self):
         if self.manual_control_window is None or not self.manual_control_window.winfo_exists():
@@ -482,6 +498,81 @@ class App(tk.Tk):
         else:
             self.plotting_window.lift()
             self.plotting_window.focus_force()
+
+    def _cancel_window_callbacks(self, window_type):
+        """Cancel pending after callbacks for a window type."""
+        if window_type in self._window_after_ids:
+            try:
+                self.after_cancel(self._window_after_ids[window_type])
+            except:
+                pass
+            del self._window_after_ids[window_type]
+
+    def _load_window_settings(self, window_type):
+        """Load settings for a window in a thread-safe manner."""
+        if not self._settings_load_lock.acquire(blocking=False):
+            after_id = self.after(200, lambda: self._load_window_settings(window_type))
+            self._window_after_ids[window_type] = after_id
+            return
+        
+        try:
+            def load_in_thread():
+                try:
+                    if window_type == 'slow':
+                        self._get_slow_settings()
+                    elif window_type == 'fast':
+                        self._get_fast_settings()
+                except Exception as e:
+                    print(f"Error loading {window_type} settings: {e}")
+                    self.after(0, lambda: messagebox.showwarning(
+                        "Settings Load Error", 
+                        f"Could not load {window_type} settings. Hardware may be busy.\n\nError: {e}"
+                    ))
+                finally:
+                    self._settings_load_lock.release()
+            
+            thread = threading.Thread(target=load_in_thread, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            self._settings_load_lock.release()
+            print(f"Failed to start settings load thread: {e}")
+
+    def _update_slow_gui_settings(self, pid, tic, km):
+        """Update slow settings GUI elements."""
+        try:
+            self.pid_x_p.set(str(pid['x']['p']))
+            self.pid_x_i.set(str(pid['x']['i']))
+            self.pid_x_d.set(str(pid['x']['d']))
+            self.pid_y_p.set(str(pid['y']['p']))
+            self.pid_y_i.set(str(pid['y']['i']))
+            self.pid_y_d.set(str(pid['y']['d']))
+            
+            self.tic_vel.set(str(tic['velocity']))
+            self.km_vel.set(str(km['velocity']))
+            self.tic_current.set(str(tic['current_limit']))
+            self.tic_step_str.set(self.inv_step_mode_map.get(tic['step_mode'], "Unknown"))
+            
+            print("Current slow steering settings loaded.")
+        except Exception as e:
+            print(f"Error updating slow GUI settings: {e}")
+
+    def _update_fast_gui_settings(self, pid, params):
+        """Update fast settings GUI elements."""
+        try:
+            self.fast_p.set(str(pid['p']))
+            self.fast_i.set(str(pid['i']))
+            self.fast_d.set(str(pid['d']))
+            self.fast_xgain.set(str(params['xgain']))
+            self.fast_ygain.set(str(params['ygain']))
+            self.fast_xmin.set(str(params['xmin']))
+            self.fast_xmax.set(str(params['xmax']))
+            self.fast_ymin.set(str(params['ymin']))
+            self.fast_ymax.set(str(params['ymax']))
+            
+            print("Current fast steering settings loaded.")
+        except Exception as e:
+            print(f"Error updating fast GUI settings: {e}")
 
     def _connect_all(self):
         if self.is_connected:
@@ -695,23 +786,16 @@ class App(tk.Tk):
 
     def _get_fast_settings(self):
         """Get current fast steering settings from hardware."""
+        if not self.aligner or not self.is_connected:
+            return
+        
         try:
             pid, params = self.aligner.get_fast_steering_params()
-            
-            self.fast_p.set(str(pid['p']))
-            self.fast_i.set(str(pid['i']))
-            self.fast_d.set(str(pid['d']))
-            self.fast_xgain.set(str(params['xgain']))
-            self.fast_ygain.set(str(params['ygain']))
-            self.fast_xmin.set(str(params['xmin']))
-            self.fast_xmax.set(str(params['xmax']))
-            self.fast_ymin.set(str(params['ymin']))
-            self.fast_ymax.set(str(params['ymax']))
-            
-            print("Current fast steering settings loaded.")
+            self.after(0, self._update_fast_gui_settings, pid, params)
             
         except Exception as e:
-            messagebox.showerror("Error", f"Could not get fast settings: {e}")
+            print(f"Error in _get_fast_settings: {e}")
+            raise
 
     def _apply_fast_settings(self):
         """Apply fast steering parameter settings."""
@@ -814,27 +898,19 @@ class App(tk.Tk):
 
     def _get_slow_settings(self):
         """Get current slow steering settings from hardware."""
+        if not self.aligner or not self.is_connected:
+            return
+        
         try:
             pid = self.aligner.get_pid_settings()
             tic = self.aligner.get_tic_settings()
             km = self.aligner.get_km_settings()
             
-            self.pid_x_p.set(str(pid['x']['p']))
-            self.pid_x_i.set(str(pid['x']['i']))
-            self.pid_x_d.set(str(pid['x']['d']))
-            self.pid_y_p.set(str(pid['y']['p']))
-            self.pid_y_i.set(str(pid['y']['i']))
-            self.pid_y_d.set(str(pid['y']['d']))
-            
-            self.tic_vel.set(str(tic['velocity']))
-            self.km_vel.set(str(km['velocity']))
-            self.tic_current.set(str(tic['current_limit']))
-            self.tic_step_str.set(self.inv_step_mode_map.get(tic['step_mode'], "Unknown"))
-            
-            print("Current slow steering settings loaded.")
+            self.after(0, self._update_slow_gui_settings, pid, tic, km)
             
         except Exception as e:
-            messagebox.showerror("Error", f"Could not get settings: {e}")
+            print(f"Error in _get_slow_settings: {e}")
+            raise
             
     def _apply_slow_settings(self):
         """Apply slow steering settings to hardware."""

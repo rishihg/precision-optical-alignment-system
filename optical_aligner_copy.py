@@ -251,9 +251,7 @@ class OpticalAligner:
                 self.Minv = None
                 print("\nError: Final matrix is singular.", file=sys.stderr)
         
-        self.clear_calibration_data()
-        self.kqd, self.km, self.tic = None, None, None
-        print("All hardware disconnected safely.")
+        
 
     # ==================== KQD READER THREAD ====================
     
@@ -423,7 +421,7 @@ class OpticalAligner:
                 if status_callback:
                     status_callback(x_err, y_err, r.sum, final_d_tic, final_d_gon)
                 
-                time.sleep(0.1)  # 10 Hz update rate
+                time.sleep(0.5)  # 2 Hz update rate
                 
             except Exception as e:
                 print(f"\nSlow loop error: {e}", file=sys.stderr)
