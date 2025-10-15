@@ -570,6 +570,13 @@ class App(tk.Tk):
             self.fast_ymin.set(str(params['ymin']))
             self.fast_ymax.set(str(params['ymax']))
             
+            # Add these lines to read OL voltages:
+            if 'open_loop_out' in params:
+                ol_out = params['open_loop_out']
+                if hasattr(ol_out, 'xpos') and hasattr(ol_out, 'ypos'):
+                    self.fast_vx.set(str(ol_out.xpos))
+                    self.fast_vy.set(str(ol_out.ypos))
+            
             print("Current fast steering settings loaded.")
         except Exception as e:
             print(f"Error updating fast GUI settings: {e}")
@@ -585,6 +592,9 @@ class App(tk.Tk):
             self.aligner = OpticalAligner(kqd_port=kqd_port, km_port=km_port, simulation=is_sim)
             self.aligner.connect_all()
             self.is_connected = True
+
+            # if self.aligner.kqd:
+            #     self.aligner.debug_kqd_methods()
             
             # Start monitoring thread
             self._start_monitoring()
@@ -696,7 +706,17 @@ class App(tk.Tk):
                     else:
                         mode_display = "MONITOR"
                     
-                    status_text = f"Status: {mode_display} | X: {reading.xdiff:.4f} | Y: {reading.ydiff:.4f} | Sum: {reading.sum:.4f}"
+                    # Get current output voltages
+                    output = self.aligner.get_current_output()
+                    
+                    # Build status text with or without output voltages
+                    if output:
+                        status_text = (f"Status: {mode_display} | "
+                                    f"X: {reading.xdiff:.4f} | Y: {reading.ydiff:.4f} | Sum: {reading.sum:.4f} | "
+                                    f"Xout: {output['xout']:.3f}V | Yout: {output['yout']:.3f}V")
+                    else:
+                        status_text = f"Status: {mode_display} | X: {reading.xdiff:.4f} | Y: {reading.ydiff:.4f} | Sum: {reading.sum:.4f}"
+                    
                     self.after(0, self.fast_status_var.set, status_text)
                     
                     # Update plotting window if open
@@ -726,7 +746,6 @@ class App(tk.Tk):
             except Exception as e:
                 print(f"Monitoring error: {e}")
                 time.sleep(0.5)
-
     # ==================== FAST STEERING CONTROL ====================
     
     def _apply_fast_mode(self):
