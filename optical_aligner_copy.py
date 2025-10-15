@@ -738,6 +738,45 @@ class OpticalAligner:
                 ymin=params['ymin'], ymax=params['ymax']
             )
 
+    def get_current_output(self):
+        """Get current output voltages being sent to piezo actuators."""
+        if not self.kqd:
+            return None
+        
+        try:
+            with self.kqd_lock:
+                output = self.kqd.get_manual_output()
+                
+                # Named tuple is iterable, so we can index it
+                if isinstance(output, (tuple, list)) and len(output) >= 2:
+                    return {'xout': output[0], 'yout': output[1]}
+                # Or use attributes directly
+                elif hasattr(output, 'xpos') and hasattr(output, 'ypos'):
+                    return {'xout': output.xpos, 'yout': output.ypos}
+                else:
+                    return None
+                
+        except Exception as e:
+            print(f"Error getting output: {e}")
+            return None
+    # def debug_kqd_methods(self):
+    #     """Temporary debug method to find output getter."""
+    #     if not self.kqd:
+    #         return
+        
+    #     with self.kqd_lock:
+    #         print("\n=== KQD Available Methods ===")
+    #         methods = [m for m in dir(self.kqd) if not m.startswith('_') and 'get' in m.lower()]
+    #         for method in methods:
+    #             print(f"  - {method}")
+            
+    #         print("\n=== Testing output parameters ===")
+    #         params = self.kqd.get_output_parameters()
+    #         print(f"Output params type: {type(params)}")
+    #         print(f"Output params attributes: {dir(params)}")
+    #         print(f"open_loop_out value: {params.open_loop_out}")
+    #         print(f"open_loop_out type: {type(params.open_loop_out)}")
+
     def get_tic_settings(self):
         """Get Tic motor settings."""
         if not self.tic:
