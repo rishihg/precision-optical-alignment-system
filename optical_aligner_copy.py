@@ -35,6 +35,7 @@ class OpticalAligner:
         
         # Threading components
         self.kqd_lock = threading.Lock()
+        self.km_lock = threading.Lock()
         self._stop_slow_loop_event = threading.Event()
         self._stop_fast_loop_event = threading.Event()
         self.stop_kqd_reader = threading.Event()
@@ -59,6 +60,12 @@ class OpticalAligner:
         self.slow_loop_status = "stopped"
         self.fast_loop_status = "stopped"
         self._status_lock = threading.Lock()
+
+        # Command tracking for display
+        self._last_slow_commands = {'tic_cmd': 0, 'km_cmd': 0}
+        self._slow_cmd_lock = threading.Lock()
+
+
 
     def connect_all(self):
         """Connects to all available hardware without failing on optional components."""
@@ -129,9 +136,12 @@ class OpticalAligner:
         print("  - Forward direction...")
         for i in range(max_steps + 1):
             pos = start_pos + i * step_size
-            move_func(pos)
             if actuator_name == 'km':
-                self.km.wait_move()
+                with self.km_lock:
+                    move_func(pos)
+                    self.km.wait_move()
+            else:
+                move_func(pos)
             time.sleep(0.05)
             
             r = self.get_averaged_reading(n=5)
@@ -149,9 +159,12 @@ class OpticalAligner:
         
         for i in range(len(forward_positions)):
             pos = last_forward_pos - i * step_size
-            move_func(pos)
             if actuator_name == 'km':
-                self.km.wait_move()
+                with self.km_lock:
+                    move_func(pos)
+                    self.km.wait_move()
+            else:
+                move_func(pos)
             time.sleep(0.05)
             
             r = self.get_averaged_reading(n=5)
@@ -225,11 +238,11 @@ class OpticalAligner:
         
         self._calculate_final_matrix()
 
-    def calibrate_x_axis(self, step_size=10):
+    def calibrate_x_axis(self, step_size=10, max_scan_steps=20, sum_drop_ratio=0.7):
         """Calibrate X-axis."""
         self._calibrate_axis('x', step_size=step_size)
 
-    def calibrate_y_axis(self, step_size=400):
+    def calibrate_y_axis(self, step_size=400, max_scan_steps=20, sum_drop_ratio=0.7):
         """Calibrate Y-axis."""
         self._calibrate_axis('y', step_size=step_size)
 
@@ -250,7 +263,32 @@ class OpticalAligner:
             except np.linalg.LinAlgError:
                 self.Minv = None
                 print("\nError: Final matrix is singular.", file=sys.stderr)
+
+    def get_recommended_gains(self):
+        """
+        Calculate recommended gain signs based on calibration matrix.
+        Returns dict with recommended signs for X and Y loop gains.
+        """
+        if self.Minv is None:
+            return None
         
+        # For negative feedback (error reduction):
+        # If Minv[i,i] > 0: need negative gain (error positive → move negative)
+        # If Minv[i,i] < 0: need positive gain (error positive → move positive)
+        
+        recommended = {
+            'x_gain_sign': -1 if self.Minv[0, 0] > 0 else 1,
+            'y_gain_sign': -1 if self.Minv[1, 1] > 0 else 1,
+            'x_coupling': abs(self.Minv[0, 1]) / abs(self.Minv[0, 0]) if abs(self.Minv[0, 0]) > 1e-9 else 0,
+            'y_coupling': abs(self.Minv[1, 0]) / abs(self.Minv[1, 1]) if abs(self.Minv[1, 1]) > 1e-9 else 0
+        }
+        
+        return recommended   
+    
+    def get_last_slow_commands(self):
+        """Get the last commands sent to actuators in slow loop."""
+        with self._slow_cmd_lock:
+            return self._last_slow_commands.copy()
         
 
     # ==================== KQD READER THREAD ====================
@@ -321,6 +359,30 @@ class OpticalAligner:
                 np.mean(y_vals),
                 np.mean(sum_vals)
             )
+        
+    def get_current_output(self):
+        """Get current output voltages being sent to piezo actuators."""
+        if not self.kqd:
+            return None
+        
+        try:
+            with self.kqd_lock:
+                output = self.kqd.get_manual_output()
+                
+                # Named tuple is iterable, so we can index it
+                if isinstance(output, (tuple, list)) and len(output) >= 2:
+                    return {'xout': output[0], 'yout': output[1]}
+                # Or use attributes directly
+                elif hasattr(output, 'xpos') and hasattr(output, 'ypos'):
+                    return {'xout': output.xpos, 'yout': output.ypos}
+                else:
+                    return None
+                
+        except Exception as e:
+            print(f"Error getting output: {e}")
+            return None
+        
+        
 
     # ==================== SLOW STEERING CONTROL ====================
     
@@ -414,8 +476,21 @@ class OpticalAligner:
                 
                 # Apply corrections
                 current_tic_pos = self.tic.get_current_position()
-                self.tic.set_target_position(current_tic_pos + int(final_d_tic))
-                self.km.move_by(int(final_d_gon))
+                tic_command = int(final_d_tic)
+                km_command = int(final_d_gon)
+
+                self.tic.set_target_position(current_tic_pos + tic_command)
+
+                with self.km_lock:
+                    self.km.move_by(km_command)
+
+                # Store commands for display
+                with self._slow_cmd_lock:
+                    self._last_slow_commands = {
+                        'tic_cmd': tic_command,
+                        'km_cmd': km_command
+                    }
+
                 
                 # Status callback
                 if status_callback:
@@ -585,6 +660,47 @@ class OpticalAligner:
 
     # ==================== LEGACY CLI INTERFACE ====================
     
+    def get_hardware_status(self):
+        """Get status of all connected hardware."""
+        status = {
+            'kqd': {'connected': self.kqd is not None},
+            'tic': {'connected': False, 'energized': False, 'position': 0},
+            'km': {'connected': False, 'position': 0}
+        }
+        
+        # Check Tic status
+        if self.tic:
+            try:
+                status['tic']['connected'] = True
+                status['tic']['position'] = self.tic.get_current_position()
+                
+                try:
+                    variables = self.tic.get_variables()
+                    operation_state = variables[0]
+                    status['tic']['energized'] = bool(operation_state & 0x01)
+                except:
+                    status['tic']['energized'] = True
+                    
+            except Exception as e:
+                print(f"Error reading Tic status: {e}")
+        
+        # Check KM status - NON-BLOCKING
+        if self.km:
+            if not hasattr(self, 'km_lock'):
+                self.km_lock = threading.Lock()
+            
+            if self.km_lock.acquire(blocking=False):
+                try:
+                    status['km']['connected'] = True
+                    status['km']['position'] = self.km.get_position()
+                except Exception as e:
+                    pass  # Don't print - normal during moves
+                finally:
+                    self.km_lock.release()
+            # If we can't get lock, KM is busy - that's OK, keep old status
+        
+        return status
+
     def manage_fast_steering_mode(self):
         """Interactive CLI for fast steering modes (legacy interface)."""
         if not self.kqd:
@@ -799,14 +915,21 @@ class OpticalAligner:
         """Get Kinesis Motor settings."""
         if not self.km:
             raise ConnectionError("Kinesis Motor not connected.")
-        return {'velocity': self.km.get_velocity_parameters().max_velocity}
+        
+        with self.km_lock:
+            vel_params = self.km.get_velocity_parameters()
+            return {
+                'velocity': vel_params.max_velocity,
+                'acceleration': vel_params.acceleration
+            }
 
-    def set_km_settings(self, velocity):
+    def set_km_settings(self, velocity, acceleration):
         """Set Kinesis Motor settings."""
         if not self.km:
             raise ConnectionError("Kinesis Motor not connected.")
-        current_accel = self.km.get_velocity_parameters().acceleration
-        self.km.setup_velocity(max_velocity=velocity, acceleration=current_accel)
+        
+        with self.km_lock:
+            self.km.setup_velocity(max_velocity=velocity, acceleration=acceleration)
 
     # ==================== MANUAL CONTROL ====================
     
@@ -825,12 +948,14 @@ class OpticalAligner:
         """Manually move Y-axis (Kinesis Motor)."""
         if not self.km:
             raise ConnectionError("Kinesis motor not connected.")
-        if relative:
-            target_pos = self.km.get_position() + distance
-            self.km.move_to(target_pos)
-        else:
-            self.km.move_to(distance)
-        self.km.wait_move()
+        
+        with self.km_lock:
+            if relative:
+                target_pos = self.km.get_position() + distance
+                self.km.move_to(target_pos)
+            else:
+                self.km.move_to(distance)
+            self.km.wait_move()
 
     # ==================== CALIBRATION ====================
     
