@@ -9,10 +9,6 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 # --- CONFIGURATION ---
-# This is now controlled by a checkbox in the GUI
-# ---------------------
-
-# --- Hardware Discovery & Startup ---
 startup_error = None
 KQD_PORT, KM_PORT = None, None
 SIMULATION = '--simulation' in sys.argv
@@ -39,7 +35,6 @@ else:
 
     except Exception as e:
         startup_error = e 
-# ---------------------
 
 
 class PlottingWindow(tk.Toplevel):
@@ -47,20 +42,39 @@ class PlottingWindow(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
         self.title("Live Error Plot")
-        self.geometry("600x600")
+        self.geometry("600x800")  # Made taller for 3 subplots
 
         self.is_plotting_active = True
-        self.plot_time_data, self.x_error_data, self.y_error_data = deque(), deque(), deque()
+        self.plot_time_data = deque(maxlen=1000)
+        self.x_error_data = deque(maxlen=1000)
+        self.y_error_data = deque(maxlen=1000)
+        self.sum_data = deque(maxlen=1000)  # Add sum data buffer
+        
+        # Throttle plotting updates
+        self.last_plot_update = 0
+        self.plot_update_interval = 0.2  # Update plot every 200ms max
 
-        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(6, 6))
+        # Create 3 subplots instead of 2
+        self.fig, (self.ax1, self.ax2, self.ax3) = plt.subplots(3, 1, figsize=(6, 8))
         self.fig.tight_layout(pad=3.0)
-        self.ax1.set_title("X-Axis Error"); self.ax1.set_ylabel("Error (V)")
+        
+        # X-axis plot
+        self.ax1.set_title("X-Axis Error")
+        self.ax1.set_ylabel("Error (V)")
         self.line1, = self.ax1.plot([], [], 'r-')
         self.ax1.axhline(0, color='gray', linestyle='--', linewidth=1)
 
-        self.ax2.set_title("Y-Axis Error"); self.ax2.set_xlabel("Time (s)"); self.ax2.set_ylabel("Error (V)")
+        # Y-axis plot
+        self.ax2.set_title("Y-Axis Error")
+        self.ax2.set_ylabel("Error (V)")
         self.line2, = self.ax2.plot([], [], 'b-')
         self.ax2.axhline(0, color='gray', linestyle='--', linewidth=1)
+        
+        # Sum plot
+        self.ax3.set_title("Sum Signal")
+        self.ax3.set_xlabel("Time (s)")
+        self.ax3.set_ylabel("Sum (V)")
+        self.line3, = self.ax3.plot([], [], 'g-')
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         toolbar = NavigationToolbar2Tk(self.canvas, self)
@@ -69,37 +83,64 @@ class PlottingWindow(tk.Toplevel):
 
         control_frame = ttk.Frame(self)
         control_frame.pack(side=tk.BOTTOM, pady=5)
-        self.toggle_btn = ttk.Button(control_frame, text="Stop Live Tracking", command=self._toggle_live_plotting)
+        self.toggle_btn = ttk.Button(control_frame, text="Stop Live Tracking", 
+                                     command=self._toggle_live_plotting)
         self.toggle_btn.pack(side="left", padx=5)
-        clear_btn = ttk.Button(control_frame, text="Clear Plot Data", command=self._clear_plot_data)
+        clear_btn = ttk.Button(control_frame, text="Clear Plot Data", 
+                              command=self._clear_plot_data)
         clear_btn.pack(side="left", padx=5)
         
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     def _toggle_live_plotting(self):
         self.is_plotting_active = not self.is_plotting_active
-        self.toggle_btn.config(text="Stop Live Tracking" if self.is_plotting_active else "Start Live Tracking")
+        self.toggle_btn.config(text="Stop Live Tracking" if self.is_plotting_active 
+                              else "Start Live Tracking")
 
     def _clear_plot_data(self):
-        self.plot_time_data.clear(); self.x_error_data.clear(); self.y_error_data.clear()
-        self.line1.set_data([], []); self.line2.set_data([], [])
-        for ax in [self.ax1, self.ax2]: ax.relim(); ax.autoscale_view()
+        self.plot_time_data.clear()
+        self.x_error_data.clear()
+        self.y_error_data.clear()
+        self.sum_data.clear()  # Clear sum data
+        self.line1.set_data([], [])
+        self.line2.set_data([], [])
+        self.line3.set_data([], [])  # Clear sum line
+        for ax in [self.ax1, self.ax2, self.ax3]:
+            ax.relim()
+            ax.autoscale_view()
         self.canvas.draw()
 
-    def update_plot(self, elapsed_time, x_err, y_err):
+    def update_plot(self, elapsed_time, x_err, y_err, sum_val):  # Add sum_val parameter
+        """Update plot with throttling to prevent GUI freezing."""
+        # Always add data to buffers
         self.plot_time_data.append(elapsed_time)
         self.x_error_data.append(x_err)
         self.y_error_data.append(y_err)
+        self.sum_data.append(sum_val)  # Add sum to buffer
 
-        if self.is_plotting_active:
+        # Only redraw if enough time has passed and plotting is active
+        current_time = time.time()
+        if self.is_plotting_active and (current_time - self.last_plot_update) > self.plot_update_interval:
+            self.last_plot_update = current_time
+            
+            # Update plot data
             self.line1.set_data(self.plot_time_data, self.x_error_data)
             self.line2.set_data(self.plot_time_data, self.y_error_data)
-            for ax in [self.ax1, self.ax2]: ax.relim(); ax.autoscale_view()
-            self.canvas.draw()
+            self.line3.set_data(self.plot_time_data, self.sum_data)  # Update sum line
+            
+            # Rescale axes
+            for ax in [self.ax1, self.ax2, self.ax3]:
+                ax.relim()
+                ax.autoscale_view()
+            
+            # Non-blocking draw using draw_idle
+            self.canvas.draw_idle()
+            self.canvas.flush_events()
             
     def _on_closing(self):
         self.master.plotting_window = None
         self.destroy()
+
 
 class SlowSteeringWindow(tk.Toplevel):
     def __init__(self, master, aligner):
@@ -110,35 +151,101 @@ class SlowSteeringWindow(tk.Toplevel):
 
         cal_frame = ttk.LabelFrame(self, text="Calibration")
         cal_frame.pack(fill="x", padx=5, pady=5)
-        self.cal_x_btn = ttk.Button(cal_frame, text="Calibrate X-Axis", command=lambda: self.master_app._run_axis_calibration('x', self.cal_x_btn))
+        self.cal_x_btn = ttk.Button(cal_frame, text="Calibrate X-Axis", 
+                                    command=lambda: self.master_app._run_axis_calibration('x', self.cal_x_btn))
         self.cal_x_btn.pack(side="left", padx=5, pady=5)
-        self.cal_y_btn = ttk.Button(cal_frame, text="Calibrate Y-Axis", command=lambda: self.master_app._run_axis_calibration('y', self.cal_y_btn))
+        self.cal_y_btn = ttk.Button(cal_frame, text="Calibrate Y-Axis", 
+                                    command=lambda: self.master_app._run_axis_calibration('y', self.cal_y_btn))
         self.cal_y_btn.pack(side="left", padx=5, pady=5)
-        self.recal_sum_btn = ttk.Button(cal_frame, text="Recalibrate Signal Baseline", command=self.master_app._recalibrate_sum)
+        self.recal_sum_btn = ttk.Button(cal_frame, text="Recalibrate Signal Baseline", 
+                                    command=self.master_app._recalibrate_sum)
         self.recal_sum_btn.pack(side="left", padx=5, pady=5)
-        
+
+        # ADD THIS NEW SECTION:
+        cal_settings_frame = ttk.LabelFrame(self, text="Calibration Settings")
+        cal_settings_frame.pack(fill="x", padx=5, pady=5)
+
+        ttk.Label(cal_settings_frame, text="X Step Size:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(cal_settings_frame, textvariable=self.master_app.cal_x_step, width=10).grid(row=0, column=1, sticky="w")
+        ttk.Label(cal_settings_frame, text="steps").grid(row=0, column=2, sticky="w")
+
+        ttk.Label(cal_settings_frame, text="Y Step Size:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(cal_settings_frame, textvariable=self.master_app.cal_y_step, width=10).grid(row=1, column=1, sticky="w")
+        ttk.Label(cal_settings_frame, text="steps").grid(row=1, column=2, sticky="w")
+
+        ttk.Label(cal_settings_frame, text="Max Steps:").grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(cal_settings_frame, textvariable=self.master_app.cal_max_steps, width=10).grid(row=2, column=1, sticky="w")
+        ttk.Label(cal_settings_frame, text="(scan length)").grid(row=2, column=2, sticky="w")
+
+        ttk.Label(cal_settings_frame, text="Signal Drop Threshold:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        ttk.Entry(cal_settings_frame, textvariable=self.master_app.cal_sum_drop, width=10).grid(row=3, column=1, sticky="w")
+        ttk.Label(cal_settings_frame, text="(0-1, fraction of baseline)").grid(row=3, column=2, sticky="w")
+
         data_frame = ttk.LabelFrame(self, text="Calibration Data")
+        # ... rest continues ...
         data_frame.pack(fill="x", padx=5, pady=5)
-        ttk.Button(data_frame, text="Save...", command=self.master_app._save_calibration).pack(side="left", padx=5)
-        ttk.Button(data_frame, text="Load...", command=self.master_app._load_calibration).pack(side="left", padx=5)
-        ttk.Button(data_frame, text="Clear", command=self.master_app._clear_calibration).pack(side="left", padx=5)
+        ttk.Button(data_frame, text="Save...", 
+                  command=self.master_app._save_calibration).pack(side="left", padx=5)
+        ttk.Button(data_frame, text="Load...", 
+                  command=self.master_app._load_calibration).pack(side="left", padx=5)
+        ttk.Button(data_frame, text="Clear", 
+                  command=self.master_app._clear_calibration).pack(side="left", padx=5)
 
         settings_frame = ttk.LabelFrame(self, text="Settings")
         settings_frame.pack(fill="x", padx=5, pady=5)
-        ttk.Label(settings_frame, text="X PID (P/I/D):").grid(row=0, column=0, sticky="w", padx=5)
-        ttk.Entry(settings_frame, textvariable=self.master_app.pid_x_p, width=5).grid(row=0, column=1); ttk.Entry(settings_frame, textvariable=self.master_app.pid_x_i, width=5).grid(row=0, column=2); ttk.Entry(settings_frame, textvariable=self.master_app.pid_x_d, width=5).grid(row=0, column=3)
-        ttk.Label(settings_frame, text="Y PID (P/I/D):").grid(row=1, column=0, sticky="w", padx=5)
-        ttk.Entry(settings_frame, textvariable=self.master_app.pid_y_p, width=5).grid(row=1, column=1); ttk.Entry(settings_frame, textvariable=self.master_app.pid_y_i, width=5).grid(row=1, column=2); ttk.Entry(settings_frame, textvariable=self.master_app.pid_y_d, width=5).grid(row=1, column=3)
-        ttk.Label(settings_frame, text="X-Axis Velocity:").grid(row=2, column=0, sticky="w", padx=5)
-        ttk.Entry(settings_frame, textvariable=self.master_app.tic_vel, width=10).grid(row=2, column=1, columnspan=2, sticky="w")
-        ttk.Label(settings_frame, text="Y-Axis Velocity:").grid(row=3, column=0, sticky="w", padx=5)
-        ttk.Entry(settings_frame, textvariable=self.master_app.km_vel, width=10).grid(row=3, column=1, columnspan=2, sticky="w")
-        ttk.Label(settings_frame, text="X-Axis Current (mA):").grid(row=4, column=0, sticky="w", padx=5)
-        ttk.Entry(settings_frame, textvariable=self.master_app.tic_current, width=10).grid(row=4, column=1, columnspan=2, sticky="w")
-        ttk.Label(settings_frame, text="X-Axis Step Mode:").grid(row=5, column=0, sticky="w", padx=5)
-        ttk.Combobox(settings_frame, textvariable=self.master_app.tic_step_str, values=list(self.master_app.step_mode_map.keys()), width=12, state="readonly").grid(row=5, column=1, columnspan=2, sticky="w")
-        ttk.Button(settings_frame, text="Get Current", command=self.master_app._get_slow_settings).grid(row=6, column=0, pady=5, sticky="w")
-        ttk.Button(settings_frame, text="Apply Settings", command=self.master_app._apply_slow_settings).grid(row=6, column=1, pady=5, sticky="w")
+
+        # Create two column headers
+        ttk.Label(settings_frame, text="X-Axis (Tic)", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=1, columnspan=3, pady=(0, 5))
+        ttk.Label(settings_frame, text="Y-Axis (KM)", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=5, columnspan=3, pady=(0, 5))
+
+        # Separator
+        ttk.Separator(settings_frame, orient='vertical').grid(row=1, column=4, rowspan=7, sticky='ns', padx=10)
+
+        # PID Settings
+        ttk.Label(settings_frame, text="PID (P/I/D):").grid(row=1, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(settings_frame, textvariable=self.master_app.pid_x_p, width=5).grid(row=1, column=1, padx=2)
+        ttk.Entry(settings_frame, textvariable=self.master_app.pid_x_i, width=5).grid(row=1, column=2, padx=2)
+        ttk.Entry(settings_frame, textvariable=self.master_app.pid_x_d, width=5).grid(row=1, column=3, padx=2)
+
+        ttk.Entry(settings_frame, textvariable=self.master_app.pid_y_p, width=5).grid(row=1, column=5, padx=2)
+        ttk.Entry(settings_frame, textvariable=self.master_app.pid_y_i, width=5).grid(row=1, column=6, padx=2)
+        ttk.Entry(settings_frame, textvariable=self.master_app.pid_y_d, width=5).grid(row=1, column=7, padx=2)
+
+        # Velocity
+        ttk.Label(settings_frame, text="Velocity:").grid(row=2, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(settings_frame, textvariable=self.master_app.tic_vel, width=10).grid(row=2, column=1, columnspan=2, sticky="w", padx=2)
+        ttk.Label(settings_frame, text="steps/s").grid(row=2, column=3, sticky="w")
+
+        ttk.Entry(settings_frame, textvariable=self.master_app.km_vel, width=10).grid(row=2, column=5, columnspan=2, sticky="w", padx=2)
+        ttk.Label(settings_frame, text="deg/s").grid(row=2, column=7, sticky="w")
+
+        # Acceleration (Y-axis only shown)
+        ttk.Label(settings_frame, text="Acceleration:").grid(row=3, column=0, sticky="w", padx=5, pady=3)
+        ttk.Label(settings_frame, text="—", foreground="gray").grid(row=3, column=1, columnspan=2)  # Not applicable for Tic
+
+        ttk.Entry(settings_frame, textvariable=self.master_app.km_accel, width=10).grid(row=3, column=5, columnspan=2, sticky="w", padx=2)
+        ttk.Label(settings_frame, text="deg/s²").grid(row=3, column=7, sticky="w")
+
+        # Current Limit (X-axis only)
+        ttk.Label(settings_frame, text="Current Limit:").grid(row=4, column=0, sticky="w", padx=5, pady=3)
+        ttk.Entry(settings_frame, textvariable=self.master_app.tic_current, width=10).grid(row=4, column=1, columnspan=2, sticky="w", padx=2)
+        ttk.Label(settings_frame, text="mA").grid(row=4, column=3, sticky="w")
+
+        ttk.Label(settings_frame, text="—", foreground="gray").grid(row=4, column=5, columnspan=2)  # Not applicable for KM
+
+        # Step Mode (X-axis only)
+        ttk.Label(settings_frame, text="Step Mode:").grid(row=5, column=0, sticky="w", padx=5, pady=3)
+        ttk.Combobox(settings_frame, textvariable=self.master_app.tic_step_str, 
+                    values=list(self.master_app.step_mode_map.keys()), 
+                    width=12, state="readonly").grid(row=5, column=1, columnspan=2, sticky="w", padx=2)
+
+        ttk.Label(settings_frame, text="—", foreground="gray").grid(row=5, column=5, columnspan=2)  # Not applicable for KM
+
+        # Buttons
+        ttk.Button(settings_frame, text="Get Current Settings", 
+                command=self.master_app._get_slow_settings).grid(row=6, column=0, columnspan=4, pady=10, sticky="ew", padx=5)
+        ttk.Button(settings_frame, text="Apply Settings", 
+                command=self.master_app._apply_slow_settings).grid(row=6, column=5, columnspan=3, pady=10, sticky="ew", padx=5)
         
         loop_frame = ttk.LabelFrame(self, text="Feedback Loop Control")
         loop_frame.pack(fill="x", padx=5, pady=5)
@@ -152,18 +259,25 @@ class SlowSteeringWindow(tk.Toplevel):
 
         button_frame = ttk.Frame(loop_frame)
         button_frame.pack(pady=2, fill="x")
-        self.start_loop_btn = ttk.Button(button_frame, text="Start Slow Loop", command=self.master_app._start_slow_loop)
+        self.start_loop_btn = ttk.Button(button_frame, text="Start Slow Loop", 
+                                        command=self.master_app._start_slow_loop)
         self.start_loop_btn.pack(side="left", padx=5)
-        self.stop_loop_btn = ttk.Button(button_frame, text="Stop Loop", command=self.master_app._stop_slow_loop, state="disabled")
+        self.stop_loop_btn = ttk.Button(button_frame, text="Stop Loop", 
+                                       command=self.master_app._stop_slow_loop)
         self.stop_loop_btn.pack(side="left", padx=5)
 
         ttk.Label(loop_frame, textvariable=self.master_app.loop_status_var).pack(pady=2)
 
+        
+        
+
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         
     def _on_closing(self):
+        self.master_app._cancel_window_callbacks('slow')
         self.master_app.slow_steering_window = None
         self.destroy()
+
 
 class FastSteeringWindow(tk.Toplevel):
     def __init__(self, master, aligner):
@@ -179,31 +293,58 @@ class FastSteeringWindow(tk.Toplevel):
         mode_frame = ttk.LabelFrame(self, text="Mode Control")
         mode_frame.pack(fill="x", padx=5, pady=5)
         
-        ttk.Radiobutton(mode_frame, text="Monitor", variable=self.master_app.fast_mode_var, value="monitor", command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
-        ttk.Radiobutton(mode_frame, text="Open Loop", variable=self.master_app.fast_mode_var, value="open_loop", command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
-        ttk.Radiobutton(mode_frame, text="Closed Loop", variable=self.master_app.fast_mode_var, value="closed_loop", command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="Monitor", 
+                       variable=self.master_app.fast_mode_var, 
+                       value="monitor", 
+                       command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="Open Loop", 
+                       variable=self.master_app.fast_mode_var, 
+                       value="open_loop", 
+                       command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="Closed Loop", 
+                       variable=self.master_app.fast_mode_var, 
+                       value="closed_loop", 
+                       command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
 
         params_frame = ttk.LabelFrame(self, text="Parameters")
         params_frame.pack(fill="x", padx=5, pady=5)
+        
         ttk.Label(params_frame, text="CL PID (P/I/D):").grid(row=0, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_p, width=5).grid(row=0, column=1); ttk.Entry(params_frame, textvariable=self.master_app.fast_i, width=5).grid(row=0, column=2); ttk.Entry(params_frame, textvariable=self.master_app.fast_d, width=5).grid(row=0, column=3)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_p, width=5).grid(row=0, column=1)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_i, width=5).grid(row=0, column=2)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_d, width=5).grid(row=0, column=3)
+        
         ttk.Label(params_frame, text="OL Voltage (X/Y):").grid(row=1, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_vx, width=5).grid(row=1, column=1); ttk.Entry(params_frame, textvariable=self.master_app.fast_vy, width=5).grid(row=1, column=2)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_vx, width=5).grid(row=1, column=1)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_vy, width=5).grid(row=1, column=2)
+        
         ttk.Label(params_frame, text="X Gain (-1 to 1):").grid(row=2, column=0, sticky="w", padx=5)
         ttk.Entry(params_frame, textvariable=self.master_app.fast_xgain, width=5).grid(row=2, column=1)
         ttk.Label(params_frame, text="Y Gain (-1 to 1):").grid(row=2, column=2, sticky="w", padx=5)
         ttk.Entry(params_frame, textvariable=self.master_app.fast_ygain, width=5).grid(row=2, column=3)
+        
         ttk.Label(params_frame, text="X Range (V):").grid(row=3, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_xmin, width=5).grid(row=3, column=1); ttk.Entry(params_frame, textvariable=self.master_app.fast_xmax, width=5).grid(row=3, column=2)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_xmin, width=5).grid(row=3, column=1)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_xmax, width=5).grid(row=3, column=2)
+        
         ttk.Label(params_frame, text="Y Range (V):").grid(row=4, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_ymin, width=5).grid(row=4, column=1); ttk.Entry(params_frame, textvariable=self.master_app.fast_ymax, width=5).grid(row=4, column=2)
-        ttk.Button(params_frame, text="Get Current", command=self.master_app._get_fast_settings).grid(row=5, column=0, pady=10)
-        ttk.Button(params_frame, text="Apply Settings", command=self.master_app._apply_fast_settings).grid(row=5, column=1, pady=10)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_ymin, width=5).grid(row=4, column=1)
+        ttk.Entry(params_frame, textvariable=self.master_app.fast_ymax, width=5).grid(row=4, column=2)
+        
+        ttk.Button(params_frame, text="Get Current", 
+                  command=self.master_app._get_fast_settings).grid(row=5, column=0, pady=10)
+        ttk.Button(params_frame, text="Apply Settings", 
+                  command=self.master_app._apply_fast_settings).grid(row=5, column=1, pady=10)
+
+        
 
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        
     def _on_closing(self):
+        self.master_app._cancel_window_callbacks('fast')
         self.master_app.fast_steering_window = None
         self.destroy()
+
 
 class ManualControlWindow(tk.Toplevel):
     def __init__(self, master, aligner):
@@ -217,17 +358,23 @@ class ManualControlWindow(tk.Toplevel):
         ttk.Label(x_frame, text="Magnitude (steps):").grid(row=0, column=0, padx=5, pady=5)
         self.x_move_var = tk.StringVar(value="100")
         ttk.Entry(x_frame, textvariable=self.x_move_var, width=10).grid(row=0, column=1)
-        ttk.Button(x_frame, text="+X", command=lambda: self.master_app._manual_move('x', 1, self.x_move_var)).grid(row=0, column=2, padx=5)
-        ttk.Button(x_frame, text="-X", command=lambda: self.master_app._manual_move('x', -1, self.x_move_var)).grid(row=0, column=3, padx=5)
+        ttk.Button(x_frame, text="+X", 
+                  command=lambda: self.master_app._manual_move('x', 1, self.x_move_var)).grid(row=0, column=2, padx=5)
+        ttk.Button(x_frame, text="-X", 
+                  command=lambda: self.master_app._manual_move('x', -1, self.x_move_var)).grid(row=0, column=3, padx=5)
+        
         y_frame = ttk.LabelFrame(self, text="Y-Axis Control")
         y_frame.pack(fill="x", padx=5, pady=5)
         ttk.Label(y_frame, text="Magnitude (steps):").grid(row=0, column=0, padx=5, pady=5)
         self.y_move_var = tk.StringVar(value="1000")
         ttk.Entry(y_frame, textvariable=self.y_move_var, width=10).grid(row=0, column=1)
-        ttk.Button(y_frame, text="+Y", command=lambda: self.master_app._manual_move('y', 1, self.y_move_var)).grid(row=0, column=2, padx=5)
-        ttk.Button(y_frame, text="-Y", command=lambda: self.master_app._manual_move('y', -1, self.y_move_var)).grid(row=0, column=3, padx=5)
+        ttk.Button(y_frame, text="+Y", 
+                  command=lambda: self.master_app._manual_move('y', 1, self.y_move_var)).grid(row=0, column=2, padx=5)
+        ttk.Button(y_frame, text="-Y", 
+                  command=lambda: self.master_app._manual_move('y', -1, self.y_move_var)).grid(row=0, column=3, padx=5)
 
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
+        
     def _on_closing(self):
         self.master_app.manual_control_window = None
         self.destroy()
@@ -241,36 +388,68 @@ class App(tk.Tk):
 
         self.aligner = None 
         self.is_connected = False
-        self.loop_thread = None
-        self.fast_polling_active = False
+
+        # Add locks for thread safety
+        self._window_operation_lock = threading.Lock()
+        self._settings_load_lock = threading.Lock()
+        self._window_after_ids = {}
         
         self.plotting_window = None
         self.slow_steering_window = None
         self.fast_steering_window = None
         self.manual_control_window = None
 
-        self.last_fast_update_time = 0
-        self.gui_update_interval = 0.25
-        self.kqd_lock = threading.Lock()
+        self.gui_update_interval = 0.1
+        self.monitor_thread = None
+        self.monitor_active = False
+        self.start_time = None
 
-        # --- Setup ALL StringVars in the main App ---
-        self.pid_x_p, self.pid_x_i, self.pid_x_d = tk.StringVar(value="0.1"), tk.StringVar(value="0.1"), tk.StringVar(value="0.05")
-        self.pid_y_p, self.pid_y_i, self.pid_y_d = tk.StringVar(value="0.1"), tk.StringVar(value="0.1"), tk.StringVar(value="0.05")
-        self.tic_vel = tk.StringVar(value="2000000"); self.km_vel = tk.StringVar(value="2.0")
+        # Setup all StringVars
+        self.pid_x_p = tk.StringVar(value="0.1")
+        self.pid_x_i = tk.StringVar(value="0.1")
+        self.pid_x_d = tk.StringVar(value="0.05")
+        self.pid_y_p = tk.StringVar(value="0.1")
+        self.pid_y_i = tk.StringVar(value="0.1")
+        self.pid_y_d = tk.StringVar(value="0.05")
+        self.tic_vel = tk.StringVar(value="2000000")
+        self.km_vel = tk.StringVar(value="2.0")
+        self.km_accel = tk.StringVar(value="2.0")
         self.tic_current = tk.StringVar(value="1000")
-        self.step_mode_map = {"Full step": 0, "1/2 step": 1, "1/4 step": 2, "1/8 step": 3, "1/16 step": 4, "1/32 step": 5}
+        self.fast_ymax = tk.StringVar(value="10.0")
+
+        # Add calibration setting variables
+        self.cal_x_step = tk.StringVar(value="10")
+        self.cal_y_step = tk.StringVar(value="400")
+        self.cal_max_steps = tk.StringVar(value="20")
+        self.cal_sum_drop = tk.StringVar(value="0.7")
+
+        # Add hardware status variable
+        self.hardware_status_var = tk.StringVar(value="Hardware: Disconnected")
+        
+        self.step_mode_map = {
+            "Full step": 0, "1/2 step": 1, "1/4 step": 2, 
+            "1/8 step": 3, "1/16 step": 4, "1/32 step": 5
+        }
         self.inv_step_mode_map = {v: k for k, v in self.step_mode_map.items()}
         self.tic_step_str = tk.StringVar(value="1/32 step")
-        self.loop_gain_x_var = tk.StringVar(value="1.0"); self.loop_gain_y_var = tk.StringVar(value="1.0")
+        
+        self.loop_gain_x_var = tk.StringVar(value="1.0")
+        self.loop_gain_y_var = tk.StringVar(value="1.0")
         self.loop_status_var = tk.StringVar(value="Status: Idle")
         self.fast_status_var = tk.StringVar(value="Status: Disconnected | X: --- | Y: --- | Sum: ---")
-        self.fast_mode_var = tk.StringVar(value="open_loop")
-        self.fast_p, self.fast_i, self.fast_d = tk.StringVar(value="1.0"), tk.StringVar(value="0.0"), tk.StringVar(value="0.0")
-        self.fast_vx, self.fast_vy = tk.StringVar(value="0.0"), tk.StringVar(value="0.0")
-        self.fast_xgain, self.fast_ygain = tk.StringVar(value="1.0"), tk.StringVar(value="1.0")
-        self.fast_xmin, self.fast_xmax = tk.StringVar(value="-10.0"), tk.StringVar(value="10.0")
-        self.fast_ymin, self.fast_ymax = tk.StringVar(value="-10.0"), tk.StringVar(value="10.0")
-        # ---------------------------------------------
+        self.fast_mode_var = tk.StringVar(value="monitor")
+        
+        self.fast_p = tk.StringVar(value="1.0")
+        self.fast_i = tk.StringVar(value="0.0")
+        self.fast_d = tk.StringVar(value="0.0")
+        self.fast_vx = tk.StringVar(value="0.0")
+        self.fast_vy = tk.StringVar(value="0.0")
+        self.fast_xgain = tk.StringVar(value="1.0")
+        self.fast_ygain = tk.StringVar(value="1.0")
+        self.fast_xmin = tk.StringVar(value="-10.0")
+        self.fast_xmax = tk.StringVar(value="10.0")
+        self.fast_ymin = tk.StringVar(value="-10.0")
+        self.fast_ymax = tk.StringVar(value="10.0")
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.VERTICAL)
         self.paned_window.pack(fill="both", expand=True)
@@ -290,13 +469,17 @@ class App(tk.Tk):
     
     class TextRedirector(object):
         def __init__(self, widget, tag="stdout"):
-            self.widget = widget; self.tag = tag
+            self.widget = widget
+            self.tag = tag
+            
         def write(self, str_):
             self.widget.config(state="normal")
             self.widget.insert("end", str_, (self.tag,))
             self.widget.see("end")
             self.widget.config(state="disabled")
-        def flush(self): pass
+            
+        def flush(self):
+            pass
     
     def _create_main_launcher(self, parent):
         launcher_frame = ttk.LabelFrame(parent, text="Main Controls")
@@ -305,288 +488,764 @@ class App(tk.Tk):
         conn_frame = ttk.LabelFrame(launcher_frame, text="Hardware Connections")
         conn_frame.pack(pady=5, fill="x")
         self.simulation_var = tk.BooleanVar(value=SIMULATION)
-        ttk.Checkbutton(conn_frame, text="Run in Simulation Mode", variable=self.simulation_var, command=self._on_sim_toggle).pack(side="top", anchor="w")
+        ttk.Checkbutton(conn_frame, text="Run in Simulation Mode", 
+                    variable=self.simulation_var, 
+                    command=self._on_sim_toggle).pack(side="top", anchor="w")
         
-        self.connect_btn = ttk.Button(conn_frame, text="Connect All Hardware", command=self._connect_all)
+        self.connect_btn = ttk.Button(conn_frame, text="Connect All Hardware", 
+                                    command=self._connect_all)
         self.connect_btn.pack(side="left", padx=5, pady=5)
-        self.disconnect_btn = ttk.Button(conn_frame, text="Disconnect All Hardware", command=self._disconnect_all, state="disabled")
+        self.disconnect_btn = ttk.Button(conn_frame, text="Disconnect All Hardware", 
+                                        command=self._disconnect_all, state="disabled")
         self.disconnect_btn.pack(side="left", padx=5, pady=5)
+
+        # Add hardware status display frame
+        status_frame = ttk.LabelFrame(launcher_frame, text="Hardware Status")
+        status_frame.pack(pady=5, fill="x")
+        status_label = ttk.Label(status_frame, textvariable=self.hardware_status_var, 
+                                font=("TkDefaultFont", 9))
+        status_label.pack(padx=5, pady=5, anchor="w")
 
         window_frame = ttk.LabelFrame(launcher_frame, text="Control Panels")
         window_frame.pack(pady=5, fill="x")
-        self.open_slow_btn = ttk.Button(window_frame, text="Open Slow Control Panel", command=self._open_slow_steering_window, state="disabled")
+        
+        self.open_slow_btn = ttk.Button(window_frame, text="Open Slow Control Panel", 
+                                       command=self._open_slow_steering_window, 
+                                       state="disabled")
         self.open_slow_btn.pack(pady=5)
-        self.open_fast_btn = ttk.Button(window_frame, text="Open Fast Control Panel", command=self._open_fast_steering_window, state="disabled")
+        self.open_fast_btn = ttk.Button(window_frame, text="Open Fast Control Panel", 
+                                       command=self._open_fast_steering_window, 
+                                       state="disabled")
         self.open_fast_btn.pack(pady=5)
-        self.open_manual_btn = ttk.Button(window_frame, text="Open Manual Control Panel", command=self._open_manual_control_window, state="disabled")
+        self.open_manual_btn = ttk.Button(window_frame, text="Open Manual Control Panel", 
+                                         command=self._open_manual_control_window, 
+                                         state="disabled")
         self.open_manual_btn.pack(pady=5)
-        self.open_plot_btn = ttk.Button(window_frame, text="Open Live Plot", command=self._open_plot_window, state="disabled")
+        self.open_plot_btn = ttk.Button(window_frame, text="Open Live Plot", 
+                                       command=self._open_plot_window, 
+                                       state="disabled")
         self.open_plot_btn.pack(pady=5)
 
     def _on_sim_toggle(self):
         if self.is_connected:
-            messagebox.showwarning("Warning", "Cannot change simulation mode while hardware is connected.")
+            messagebox.showwarning("Warning", 
+                                 "Cannot change simulation mode while hardware is connected.")
             self.simulation_var.set(not self.simulation_var.get())
             
     def _open_slow_steering_window(self):
-        if self.slow_steering_window is None or not self.slow_steering_window.winfo_exists(): self.slow_steering_window = SlowSteeringWindow(self, self.aligner)
-        else: self.slow_steering_window.lift()
+        with self._window_operation_lock:
+            if self.slow_steering_window is None or not self.slow_steering_window.winfo_exists():
+                self.slow_steering_window = SlowSteeringWindow(self, self.aligner)
+                self.slow_steering_window.lift()
+                self.slow_steering_window.focus_force()
+                
+                self._cancel_window_callbacks('slow')
+                after_id = self.after(150, lambda: self._load_window_settings('slow'))
+                self._window_after_ids['slow'] = after_id
+            else:
+                self.slow_steering_window.lift()
+                self.slow_steering_window.focus_force()
+            
     def _open_fast_steering_window(self):
-        if self.fast_steering_window is None or not self.fast_steering_window.winfo_exists(): self.fast_steering_window = FastSteeringWindow(self, self.aligner)
-        else: self.fast_steering_window.lift()
+        with self._window_operation_lock:
+            if self.fast_steering_window is None or not self.fast_steering_window.winfo_exists():
+                self.fast_steering_window = FastSteeringWindow(self, self.aligner)
+                self.fast_steering_window.lift()
+                self.fast_steering_window.focus_force()
+                
+                self._cancel_window_callbacks('fast')
+                after_id = self.after(150, lambda: self._load_window_settings('fast'))
+                self._window_after_ids['fast'] = after_id
+            else:
+                self.fast_steering_window.lift()
+                self.fast_steering_window.focus_force()
+            
     def _open_manual_control_window(self):
-        if self.manual_control_window is None or not self.manual_control_window.winfo_exists(): self.manual_control_window = ManualControlWindow(self, self.aligner)
-        else: self.manual_control_window.lift()
+        if self.manual_control_window is None or not self.manual_control_window.winfo_exists():
+            self.manual_control_window = ManualControlWindow(self, self.aligner)
+            self.manual_control_window.lift()
+            self.manual_control_window.focus_force()
+        else:
+            self.manual_control_window.lift()
+            self.manual_control_window.focus_force()
+            
     def _open_plot_window(self):
         if self.plotting_window is None or not self.plotting_window.winfo_exists():
             self.plotting_window = PlottingWindow(self)
+            self.plotting_window.lift()
+            self.plotting_window.focus_force()
         else:
             self.plotting_window.lift()
+            self.plotting_window.focus_force()
+
+    def _cancel_window_callbacks(self, window_type):
+        """Cancel pending after callbacks for a window type."""
+        if window_type in self._window_after_ids:
+            try:
+                self.after_cancel(self._window_after_ids[window_type])
+            except:
+                pass
+            del self._window_after_ids[window_type]
+
+    def _load_window_settings(self, window_type):
+        """Load settings for a window in a thread-safe manner."""
+        if not self._settings_load_lock.acquire(blocking=False):
+            after_id = self.after(200, lambda: self._load_window_settings(window_type))
+            self._window_after_ids[window_type] = after_id
+            return
+        
+        try:
+            def load_in_thread():
+                try:
+                    if window_type == 'slow':
+                        self._get_slow_settings()
+                    elif window_type == 'fast':
+                        self._get_fast_settings()
+                except Exception as e:
+                    print(f"Error loading {window_type} settings: {e}")
+                    self.after(0, lambda: messagebox.showwarning(
+                        "Settings Load Error", 
+                        f"Could not load {window_type} settings. Hardware may be busy.\n\nError: {e}"
+                    ))
+                finally:
+                    self._settings_load_lock.release()
+            
+            thread = threading.Thread(target=load_in_thread, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            self._settings_load_lock.release()
+            print(f"Failed to start settings load thread: {e}")
+
+    def _update_slow_gui_settings(self, pid, tic, km):
+        """Update slow settings GUI elements (must be called from main thread)."""
+        try:
+            self.pid_x_p.set(str(pid['x']['p']))
+            self.pid_x_i.set(str(pid['x']['i']))
+            self.pid_x_d.set(str(pid['x']['d']))
+            self.pid_y_p.set(str(pid['y']['p']))
+            self.pid_y_i.set(str(pid['y']['i']))
+            self.pid_y_d.set(str(pid['y']['d']))
+            
+            self.tic_vel.set(str(tic['velocity']))
+            self.km_vel.set(str(km['velocity']))
+            self.km_accel.set(str(km['acceleration']))  # ← ADD THIS
+            self.tic_current.set(str(tic['current_limit']))
+            self.tic_step_str.set(self.inv_step_mode_map.get(tic['step_mode'], "Unknown"))
+            
+            print("Current slow steering settings loaded.")
+        except Exception as e:
+            print(f"Error updating slow GUI settings: {e}")
+
+    def _update_fast_gui_settings(self, pid, params):
+        """Update fast settings GUI elements."""
+        try:
+            self.fast_p.set(str(pid['p']))
+            self.fast_i.set(str(pid['i']))
+            self.fast_d.set(str(pid['d']))
+            self.fast_xgain.set(str(params['xgain']))
+            self.fast_ygain.set(str(params['ygain']))
+            self.fast_xmin.set(str(params['xmin']))
+            self.fast_xmax.set(str(params['xmax']))
+            self.fast_ymin.set(str(params['ymin']))
+            self.fast_ymax.set(str(params['ymax']))
+            
+            print("Current fast steering settings loaded.")
+        except Exception as e:
+            print(f"Error updating fast GUI settings: {e}")
 
     def _connect_all(self):
-        if self.is_connected: self._disconnect_all()
+        if self.is_connected:
+            self._disconnect_all()
+            time.sleep(0.5)  # Wait after disconnect
+            
         try:
             is_sim = self.simulation_var.get()
             kqd_port, km_port = self._find_hardware(is_sim)
+            
+            print("Creating aligner instance...")
             self.aligner = OpticalAligner(kqd_port=kqd_port, km_port=km_port, simulation=is_sim)
+            
+            print("Connecting to hardware...")
             self.aligner.connect_all()
             self.is_connected = True
+            
+            # Verify connection before proceeding
+            time.sleep(0.5)
+            
+            # Start monitoring thread
+            self._start_monitoring()
+            
             if self.aligner.kqd:
                 self.open_fast_btn.config(state="normal")
                 self.open_plot_btn.config(state="normal")
-                self.fast_polling_active = True
-                threading.Thread(target=self._poll_fast_readings, daemon=True).start()
+                
             if self.aligner.km and self.aligner.tic:
                 self.open_slow_btn.config(state="normal")
                 self.open_manual_btn.config(state="normal")
-            self.disconnect_btn.config(state="normal"); self.connect_btn.config(state="disabled")
+                
+            self.disconnect_btn.config(state="normal")
+            self.connect_btn.config(state="disabled")
             self.simulation_var.set(is_sim)
-            messagebox.showinfo("Success", "Hardware connected successfully.")
+            print("Hardware connected successfully.")
+            
         except Exception as e:
-            messagebox.showerror("Connection Error", f"Failed to connect: {e}")
+            print(f"Connection error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Clean up on failed connection
+            if self.aligner:
+                try:
+                    self.aligner.disconnect_all()
+                except:
+                    pass
+                self.aligner = None
+            
             self.is_connected = False
+            messagebox.showerror("Connection Error", f"Failed to connect: {e}")
 
     def _disconnect_all(self):
-        self._stop_slow_loop(); self._stop_fast_polling()
-        for win in [self.slow_steering_window, self.fast_steering_window, self.manual_control_window, self.plotting_window]:
-            if win and win.winfo_exists(): win.destroy()
-        if self.aligner: self.aligner.disconnect_all()
+        # Stop loops first
+        if self.aligner:
+            print("Stopping all feedback loops...")
+            self.aligner.stop_all_loops()
+            time.sleep(0.5)  # Give loops time to stop
+            
+        # Stop monitoring
+        self._stop_monitoring()
+        
+        # Close windows
+        print("Closing control panels...")
+        for win in [self.slow_steering_window, self.fast_steering_window, 
+                self.manual_control_window, self.plotting_window]:
+            if win and win.winfo_exists():
+                win.destroy()
+                
+        # Disconnect hardware
+        if self.aligner:
+            print("Disconnecting hardware...")
+            try:
+                self.aligner.disconnect_all()
+            except Exception as e:
+                print(f"Error during disconnect: {e}")
+            
+            # Give hardware time to release
+            time.sleep(0.3)
+            
+        self.aligner = None
         self.is_connected = False
-        for btn in [self.open_slow_btn, self.open_fast_btn, self.open_manual_btn, self.open_plot_btn, self.disconnect_btn]:
+        
+        # Update button states
+        for btn in [self.open_slow_btn, self.open_fast_btn, self.open_manual_btn, 
+                self.open_plot_btn, self.disconnect_btn]:
             btn.config(state="disabled")
+            
         self.connect_btn.config(state="normal")
-        messagebox.showinfo("Success", "All hardware disconnected.")
+        
+        # Update status
+        self.hardware_status_var.set("Hardware: Disconnected")
+        
+        print("All hardware disconnected.")
         
     def _find_hardware(self, is_sim):
-        if is_sim: return "SIM_KQD", "SIM_KM"
+        if is_sim:
+            return "SIM_KQD", "SIM_KM"
+            
         from usbfinder import USBTTYFinder
-        usb = USBTTYFinder(); kqd_port, km_port = None, None
-        try: kqd_port = usb.find_by_product("Position Aligner")[0]
-        except Exception: print("WARNING: KQD not found.")
-        try: km_port = usb.find_by_product("Brushed Motor Controller")[0]
-        except Exception: print("WARNING: Kinesis Motor not found.")
-        if kqd_port is None and km_port is None: raise ConnectionError("No alignment hardware found.")
+        usb = USBTTYFinder()
+        kqd_port, km_port = None, None
+        
+        try:
+            kqd_port = usb.find_by_product("Position Aligner")[0]
+        except Exception:
+            print("WARNING: KQD not found.")
+            
+        try:
+            km_port = usb.find_by_product("Brushed Motor Controller")[0]
+        except Exception:
+            print("WARNING: Kinesis Motor not found.")
+            
+        if kqd_port is None and km_port is None:
+            raise ConnectionError("No alignment hardware found.")
+            
         return kqd_port, km_port
 
-    def _poll_fast_readings(self):
-        start_time = time.time()
-        while self.fast_polling_active:
+    # ==================== MONITORING THREAD ====================
+    
+    def _start_monitoring(self):
+        """Start background monitoring thread for GUI updates."""
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            return
+            
+        self.monitor_active = True
+        self.start_time = time.time()
+        self.monitor_thread = threading.Thread(
+            target=self._monitoring_loop,
+            daemon=True
+        )
+        self.monitor_thread.start()
+        print("GUI monitoring started.")
+    
+    def _stop_monitoring(self):
+        """Stop monitoring thread."""
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_active = False
+            self.monitor_thread.join(timeout=1.0)
+            print("GUI monitoring stopped.")
+    
+    def _monitoring_loop(self):
+        """Background loop to update GUI with latest readings."""
+        while self.monitor_active and self.aligner:
             try:
-                now = time.time()
-                if now - self.last_fast_update_time > self.gui_update_interval:
-                    with self.aligner.kqd_lock:
-                        if not self.fast_polling_active: break
-                        r = self.aligner.kqd.get_readings()
-                        mode = self.aligner.kqd.get_operation_mode()
-                    if r:
-                        self.last_fast_update_time = now
-                        status_text = f"Status: {mode.upper()} | X: {r.xdiff:.4f} | Y: {r.ydiff:.4f} | Sum: {r.sum:.4f}"
-                        self.after(0, self.fast_status_var.set, status_text)
-                        self.after(0, self.fast_mode_var.set, mode)
-                        if self.plotting_window and self.plotting_window.winfo_exists():
-                            self.plotting_window.update_plot(now - start_time, r.xdiff, r.ydiff)
+                # Get latest reading from aligner
+                reading = self.aligner.get_latest_reading()
+                
+                # Update hardware status
+                hw_status = self.aligner.get_hardware_status()
+                self._update_hardware_status_display(hw_status)
+                
+                if reading:
+                    # ... rest of the existing code ...
+                    # Update fast status display
+                    loop_status = self.aligner.get_loop_status()
+                    fast_status = loop_status.get('fast', 'stopped')
+                    
+                    # Determine display mode
+                    if fast_status == 'running':
+                        mode_display = "ACTIVE"
+                    else:
+                        mode_display = "MONITOR"
+                    
+                    # Get current output voltages
+                    output = self.aligner.get_current_output()
+                    
+                    # Build status text with or without output voltages
+                    if output:
+                        status_text = (f"Status: {mode_display} | "
+                                    f"X: {reading.xdiff:.4f} | Y: {reading.ydiff:.4f} | Sum: {reading.sum:.4f} | "
+                                    f"Xout: {output['xout']:.3f}V | Yout: {output['yout']:.3f}V")
+                    else:
+                        status_text = f"Status: {mode_display} | X: {reading.xdiff:.4f} | Y: {reading.ydiff:.4f} | Sum: {reading.sum:.4f}"
+                    
+                    self.after(0, self.fast_status_var.set, status_text)
+                    
+                    # Update plotting window if open
+                    if self.plotting_window and self.plotting_window.winfo_exists():
+                        elapsed = time.time() - self.start_time
+                        self.plotting_window.update_plot(elapsed, reading.xdiff, reading.ydiff, reading.sum)
+                    
+                    # Update slow loop status if running
+                    slow_status = loop_status.get('slow', 'stopped')
+                    if slow_status == 'running':
+                        # Get command info if available
+                        cmd_info = self.aligner.get_last_slow_commands() if hasattr(self.aligner, 'get_last_slow_commands') else None
+                        
+                        if cmd_info:
+                            status_str = (f"Status: Running | X: {reading.xdiff:.4f} | Y: {reading.ydiff:.4f} | Sum: {reading.sum:.4f} | "
+                                        f"Tic cmd: {cmd_info['tic_cmd']:+.1f} steps | KM cmd: {cmd_info['km_cmd']:+.1f} steps")
+                        else:
+                            status_str = f"Status: Running | X: {reading.xdiff:.4f} | Y: {reading.ydiff:.4f} | Sum: {reading.sum:.4f}"
+                        
+                        self.after(0, self.loop_status_var.set, status_str)
+                    elif slow_status != 'stopped':
+                        # Update status for non-running states
+                        status_map = {
+                            "stopped_beam_lost": "Stopped: Beam Lost",
+                            "stopped_by_user": "Stopped: User",
+                            "error_not_calibrated": "Error: Not Calibrated",
+                            "error_no_baseline": "Error: No Baseline",
+                            "error_hardware_missing": "Error: Hardware Missing"
+                        }
+                        display_status = status_map.get(slow_status, slow_status)
+                        self.after(0, self.loop_status_var.set, f"Status: {display_status}")
+                
+                time.sleep(self.gui_update_interval)
+                
             except Exception as e:
-                print(f"Fast polling error: {e}")
-            time.sleep(0.1)
+                print(f"Monitoring error: {e}")
+                time.sleep(0.5)
+
+    def _update_hardware_status_display(self, status):
+        """Update the hardware status display."""
+        if not status:
+            status_text = "Hardware: Disconnected"
+        else:
+            status_parts = []
+            
+            # KQD status
+            if status['kqd']['connected']:
+                status_parts.append("KQD: ✓")
+            else:
+                status_parts.append("KQD: ✗")
+            
+            # Tic status
+            if status['tic']['connected']:
+                energized = "ON" if status['tic']['energized'] else "OFF"
+                pos = status['tic']['position']
+                status_parts.append(f"Tic: ✓ (Motor: {energized}, Pos: {pos})")
+            else:
+                status_parts.append("Tic: ✗")
+            
+            # KM status
+            if status['km']['connected']:
+                pos = status['km']['position']
+                status_parts.append(f"KM: ✓ (Pos: {pos:.2f})")
+            else:
+                status_parts.append("KM: ✗")
+            
+            status_text = " | ".join(status_parts)
+        
+        self.after(0, self.hardware_status_var.set, status_text)
+
+
+    # ==================== FAST STEERING CONTROL ====================
     
     def _apply_fast_mode(self):
-        try:
-            self._stop_slow_loop() 
-            if not self.fast_polling_active:
-                self.fast_polling_active = True
-                threading.Thread(target=self._poll_fast_readings, daemon=True).start()
-            
-            mode = self.fast_mode_var.get()
-            with self.aligner.kqd_lock:
-                if mode == "open_loop":
-                    vx, vy = float(self.fast_vx.get()), float(self.fast_vy.get())
-                    self.aligner.kqd.set_manual_output(xpos=vx, ypos=vy)
+        """Apply fast steering mode changes."""
+        # Run mode change in background thread to avoid blocking GUI
+        def change_mode():
+            try:
+                mode = self.fast_mode_var.get()
+                print(f"Attempting to set fast mode to: {mode}")
+                
+                # Stop any running fast loop first
+                self.aligner.stop_fast_loop()
+                time.sleep(0.3)
+                
+                if mode == "monitor":
+                    # Just monitor, no feedback - set mode directly without starting loop
+                    if self.aligner.kqd:
+                        with self.aligner.kqd_lock:
+                            self.aligner.kqd.set_operation_mode("monitor")
+                    print("Fast steering set to monitor mode.")
+                    
+                elif mode == "open_loop":
+                    vx = float(self.fast_vx.get())
+                    vy = float(self.fast_vy.get())
+                    manual_output = {'xpos': vx, 'ypos': vy}
+                    
+                    print(f"Starting open-loop with X={vx}, Y={vy}")
+                    result = self.aligner.run_fast_feedback_loop(
+                        mode="open_loop",
+                        manual_output=manual_output,
+                        threaded=True
+                    )
+                    print(f"Fast steering open-loop result: {result}")
+                    
                 elif mode == "closed_loop":
-                    p, i, d = float(self.fast_p.get()), float(self.fast_i.get()), float(self.fast_d.get())
-                    self.aligner.kqd.set_pid_parameters(p=p, i=i, d=d)
-                self.aligner.kqd.set_operation_mode(mode)
-            print(f"Fast steering mode set to '{mode}'")
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not set mode: {e}")
+                    p = float(self.fast_p.get())
+                    i = float(self.fast_i.get())
+                    d = float(self.fast_d.get())
+                    pid_params = {'p': p, 'i': i, 'd': d}
+                    
+                    print(f"Starting closed-loop with PID: P={p}, I={i}, D={d}")
+                    result = self.aligner.run_fast_feedback_loop(
+                        mode="closed_loop",
+                        pid_params=pid_params,
+                        threaded=True
+                    )
+                    print(f"Fast steering closed-loop result: {result}")
+                    
+            except Exception as e:
+                print(f"ERROR in _apply_fast_mode: {e}")
+                import traceback
+                traceback.print_exc()
+                self.after(0, messagebox.showerror, "Error", f"Could not set fast mode: {e}")
+        
+        # Run in background thread
+        threading.Thread(target=change_mode, daemon=True).start()
 
     def _get_fast_settings(self):
+        """Get current fast steering settings from hardware."""
+        if not self.aligner or not self.is_connected:
+            return
+        
         try:
-            with self.aligner.kqd_lock:
-                pid, params = self.aligner.get_fast_steering_params()
-            self.fast_p.set(str(pid['p'])); self.fast_i.set(str(pid['i'])); self.fast_d.set(str(pid['d']))
-            self.fast_xgain.set(str(params['xgain'])); self.fast_ygain.set(str(params['ygain']))
-            self.fast_xmin.set(str(params['xmin'])); self.fast_xmax.set(str(params['xmax']))
-            self.fast_ymin.set(str(params['ymin'])); self.fast_ymax.set(str(params['ymax']))
-            messagebox.showinfo("Success", "Current fast steering settings loaded.")
+            pid, params = self.aligner.get_fast_steering_params()
+            self.after(0, self._update_fast_gui_settings, pid, params)
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Could not get fast settings: {e}")
+            print(f"Error in _get_fast_settings: {e}")
+            raise
 
     def _apply_fast_settings(self):
+        """Apply fast steering parameter settings."""
         try:
-            pid = {'p': float(self.fast_p.get()), 'i': float(self.fast_i.get()), 'd': float(self.fast_d.get())}
-            params = {
-                'xgain': float(self.fast_xgain.get()), 'ygain': float(self.fast_ygain.get()),
-                'xmin': float(self.fast_xmin.get()), 'xmax': float(self.fast_xmax.get()),
-                'ymin': float(self.fast_ymin.get()), 'ymax': float(self.fast_ymax.get())
+            pid = {
+                'p': float(self.fast_p.get()),
+                'i': float(self.fast_i.get()),
+                'd': float(self.fast_d.get())
             }
-            with self.aligner.kqd_lock:
-                self.aligner.set_fast_steering_params(pid, params)
-            messagebox.showinfo("Success", "Fast steering settings applied.")
+            params = {
+                'xgain': float(self.fast_xgain.get()),
+                'ygain': float(self.fast_ygain.get()),
+                'xmin': float(self.fast_xmin.get()),
+                'xmax': float(self.fast_xmax.get()),
+                'ymin': float(self.fast_ymin.get()),
+                'ymax': float(self.fast_ymax.get())
+            }
+            
+            self.aligner.set_fast_steering_params(pid, params)
+            print("Fast steering settings applied.")
+            
         except Exception as e:
             messagebox.showerror("Error", f"Could not apply fast settings: {e}")
 
+    # ==================== SLOW STEERING CONTROL ====================
+
     def _run_in_thread(self, target_func, on_complete):
+        """Helper to run blocking operations in background thread."""
         def task_wrapper():
             try:
-                target_func(); self.after(0, on_complete, None)
+                target_func()
+                self.after(0, on_complete, None)
             except Exception as e:
                 self.after(0, on_complete, e)
         threading.Thread(target=task_wrapper, daemon=True).start()
 
     def _run_axis_calibration(self, axis, btn):
-        cal_func = self.aligner.calibrate_x_axis if axis == 'x' else self.aligner.calibrate_y_axis
+        """Run axis calibration in background thread."""
+        # Get user-configured parameters
+        try:
+            step_size = int(self.cal_x_step.get()) if axis == 'x' else int(self.cal_y_step.get())
+            max_steps = int(self.cal_max_steps.get())
+            sum_drop = float(self.cal_sum_drop.get())
+        except ValueError:
+            messagebox.showerror("Input Error", "Invalid calibration parameters. Please check your inputs.")
+            return
+        
         btn.config(state="disabled")
-        messagebox.showinfo("Calibration", f"Starting {axis.upper()}-axis calibration...")
+        print(f"Starting {axis.upper()}-axis calibration with step_size={step_size}, max_steps={max_steps}...")
+        
+        def cal_func():
+            if axis == 'x':
+                self.aligner.calibrate_x_axis(step_size=step_size, max_scan_steps=max_steps, sum_drop_ratio=sum_drop)
+            else:
+                self.aligner.calibrate_y_axis(step_size=step_size, max_scan_steps=max_steps, sum_drop_ratio=sum_drop)
+        
         def on_complete(error):
             btn.config(state="normal")
-            if error: messagebox.showerror("Error", f"{axis.upper()}-axis calibration failed: {error}")
+            if error:
+                messagebox.showerror("Error", f"{axis.upper()}-axis calibration failed: {error}")
             else:
-                messagebox.showinfo("Success", f"{axis.upper()}-axis calibration complete.")
-                if self.aligner.Minv is not None: messagebox.showinfo("Success", "Both axes calibrated. Final matrix calculated.")
+                print(f"{axis.upper()}-axis calibration complete.")
+                if self.aligner.Minv is not None:
+                    print("Both axes calibrated. Final matrix calculated.")
+                    # Show recommended gains
+                    self._show_recommended_gains()
+                    
         self._run_in_thread(cal_func, on_complete)
 
+    def _show_recommended_gains(self):
+        """Show recommended loop gain signs after calibration."""
+        if not self.aligner or not self.aligner.Minv is not None:
+            return
+        
+        rec = self.aligner.get_recommended_gains()
+        if not rec:
+            return
+        
+        x_sign = "+" if rec['x_gain_sign'] > 0 else "-"
+        y_sign = "+" if rec['y_gain_sign'] > 0 else "+"
+        
+        message = f"""Calibration Complete!
+
+    Recommended Loop Gain Signs:
+    X-Axis: {x_sign} (use {x_sign}0.1 to {x_sign}1.0)
+    Y-Axis: {y_sign} (use {y_sign}0.1 to {y_sign}1.0)
+
+    Cross-coupling (lower is better):
+    X ← Y coupling: {rec['x_coupling']:.1%}
+    Y ← X coupling: {rec['y_coupling']:.1%}
+
+    Apply these gain signs in the Feedback Loop Control section."""
+        
+        messagebox.showinfo("Calibration Results", message)
+        
+        print("\n" + "="*50)
+        print("RECOMMENDED GAIN SETTINGS")
+        print("="*50)
+        print(f"X-Axis Loop Gain: {x_sign}0.1 to {x_sign}1.0")
+        print(f"Y-Axis Loop Gain: {y_sign}0.1 to {y_sign}1.0")
+        print(f"Cross-coupling X←Y: {rec['x_coupling']:.1%}")
+        print(f"Cross-coupling Y←X: {rec['y_coupling']:.1%}")
+        print("="*50 + "\n")
+
     def _recalibrate_sum(self):
+        """Recalibrate signal baseline."""
         try:
             self.aligner.recalibrate_sum_baseline()
-            messagebox.showinfo("Success", "Signal baseline recalibrated.")
+            print("Signal baseline recalibrated.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to recalibrate: {e}")
 
     def _start_slow_loop(self):
-        if self.loop_thread and self.loop_thread.is_alive(): messagebox.showwarning("Warning", "Loop is already running."); return
-        self._stop_fast_polling()
+        """Start slow steering feedback loop."""
         try:
-            gain_x, gain_y = float(self.loop_gain_x_var.get()), float(self.loop_gain_y_var.get())
+            gain_x = float(self.loop_gain_x_var.get())
+            gain_y = float(self.loop_gain_y_var.get())
         except ValueError:
-            messagebox.showerror("Input Error", "Gains must be valid numbers."); return
-        if self.plotting_window and self.plotting_window.winfo_exists(): self.plotting_window._clear_plot_data()
-        self.start_time = time.time()
-        self.aligner.stop_loop_event.clear()
-        self.loop_thread = threading.Thread(target=self._run_loop_thread, args=(gain_x, gain_y, self._update_gui_live_data), daemon=True)
-        self.loop_thread.start()
-        if self.slow_steering_window: self.slow_steering_window.start_loop_btn.config(state="disabled"); self.slow_steering_window.stop_loop_btn.config(state="normal")
-
-    def _run_loop_thread(self, gain_x, gain_y, callback):
-        status = self.aligner.run_slow_feedback_loop(loop_gain_x=gain_x, loop_gain_y=gain_y, status_callback=callback)
-        status_map = {"stopped_beam_lost": "Stopped: Beam Lost", "stopped_by_user": "Stopped: User Interrupt", "error_not_calibrated": "Error: Not Calibrated", "error_no_baseline": "Error: No Baseline"}
-        self.after(0, self._update_loop_status_on_stop, status_map.get(status, "Idle"))
-    
-    def _update_loop_status_on_stop(self, status):
-        self.loop_status_var.set(f"Status: {status}")
-        if self.slow_steering_window: self.slow_steering_window.start_loop_btn.config(state="normal"); self.slow_steering_window.stop_loop_btn.config(state="disabled")
+            messagebox.showerror("Input Error", "Gains must be valid numbers.")
+            return
+            
+        # Clear plot if open
+        if self.plotting_window and self.plotting_window.winfo_exists():
+            self.plotting_window._clear_plot_data()
+            
+        # Start slow loop in threaded mode
+        result = self.aligner.run_slow_feedback_loop(
+            loop_gain_x=gain_x,
+            loop_gain_y=gain_y,
+            threaded=True
+        )
+        
+        if result == "error_not_calibrated":
+            messagebox.showerror("Error", "System not calibrated. Please calibrate both axes first.")
+        elif result == "error_no_baseline":
+            messagebox.showerror("Error", "No baseline sum. Please recalibrate baseline.")
+        elif result == "error_hardware_missing":
+            messagebox.showerror("Error", "Required hardware not connected.")
+        elif result == "error_already_running":
+            messagebox.showwarning("Warning", "Slow loop is already running.")
+        elif result == "started":
+            print("Slow loop started successfully.")
+            self.loop_status_var.set("Status: Starting...")
 
     def _stop_slow_loop(self):
-        if self.loop_thread and self.loop_thread.is_alive():
-            self.aligner.stop_loop_event.set()
+        """Stop slow steering feedback loop."""
+        self.aligner.stop_slow_loop()
+        print("Stopping slow loop...")
+
+    # ==================== SETTINGS ====================
+
+    def _get_slow_settings(self):
+        """Get current slow steering settings from hardware."""
+        if not self.aligner or not self.is_connected:
+            return
+        
+        try:
+            pid = self.aligner.get_pid_settings()
+            tic = self.aligner.get_tic_settings()
+            km = self.aligner.get_km_settings()
             
-    def _stop_fast_polling(self):
-        if self.fast_polling_active:
-            print("Pausing fast steering polling.")
-            self.fast_polling_active = False
-            time.sleep(0.2)
+            self.after(0, self._update_slow_gui_settings, pid, tic, km)
+            
+        except Exception as e:
+            print(f"Error in _get_slow_settings: {e}")
+            raise
+            
+    def _apply_slow_settings(self):
+        """Apply slow steering settings to hardware."""
+        try:
+            self.aligner.set_pid_settings(
+                float(self.pid_x_p.get()),
+                float(self.pid_x_i.get()),
+                float(self.pid_x_d.get()),
+                float(self.pid_y_p.get()),
+                float(self.pid_y_i.get()),
+                float(self.pid_y_d.get())
+            )
+            
+            step_mode_int = self.step_mode_map.get(self.tic_step_str.get())
+            self.aligner.set_tic_settings(
+                int(self.tic_vel.get()),
+                int(self.tic_current.get()),
+                step_mode_int
+            )
+            self.aligner.set_km_settings(
+                float(self.km_vel.get()),
+                float(self.km_accel.get())  # ← ADD THIS
+            )
+            
+            print("Slow steering settings applied.")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not apply settings: {e}")
+
+    # ==================== MANUAL CONTROL ====================
 
     def _manual_move(self, axis, direction, var):
+        """Manual axis movement."""
         try:
             distance = int(var.get()) * direction
-            if axis == 'x': self.aligner.manual_x(distance)
-            elif axis == 'y': self.aligner.manual_y(distance)
+            if axis == 'x':
+                self.aligner.manual_x(distance)
+            elif axis == 'y':
+                self.aligner.manual_y(distance)
         except (ValueError, Exception) as e:
             messagebox.showerror("Error", f"Failed to move: {e}")
 
+    # ==================== CALIBRATION DATA ====================
+
     def _save_calibration(self):
-        filepath = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")], title="Save Calibration File")
-        if not filepath: return
+        """Save calibration data to file."""
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")],
+            title="Save Calibration File"
+        )
+        if not filepath:
+            return
+            
         try:
-            self.aligner.save_calibration_to_file(filepath); messagebox.showinfo("Success", "Calibration data saved.")
+            self.aligner.save_calibration_to_file(filepath)
+            print("Calibration data saved.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save data: {e}")
 
     def _load_calibration(self):
-        filepath = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")], title="Load Calibration File")
-        if not filepath: return
+        """Load calibration data from file."""
+        filepath = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json")],
+            title="Load Calibration File"
+        )
+        if not filepath:
+            return
+            
         try:
-            self.aligner.load_calibration_from_file(filepath); messagebox.showinfo("Success", "Calibration data loaded.")
+            self.aligner.load_calibration_from_file(filepath)
+            print("Calibration data loaded.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load data: {e}")
 
     def _clear_calibration(self):
+        """Clear all calibration data."""
         if messagebox.askyesno("Confirm", "Are you sure you want to clear all calibration data?"):
-            self.aligner.clear_calibration_data(); messagebox.showinfo("Success", "Calibration data cleared.")
+            self.aligner.clear_calibration_data()
+            print("Calibration data cleared.")
             
     def _on_closing(self):
-        if self.is_connected: self._disconnect_all()
+        """Handle application closing."""
+        print("\n--- Closing application ---")
+        
+        # Stop monitoring first
+        if self.monitor_active:
+            self._stop_monitoring()
+        
+        # Disconnect hardware
+        if self.is_connected:
+            self._disconnect_all()
+        
+        # Give time for cleanup
+        time.sleep(0.3)
+        
+        # Force quit any remaining threads
+        print("Application closed.")
         self.destroy()
-        
-    def _get_slow_settings(self):
-        try:
-            pid, tic, km = self.aligner.get_pid_settings(), self.aligner.get_tic_settings(), self.aligner.get_km_settings()
-            self.pid_x_p.set(str(pid['x']['p'])); self.pid_x_i.set(str(pid['x']['i'])); self.pid_x_d.set(str(pid['x']['d']))
-            self.pid_y_p.set(str(pid['y']['p'])); self.pid_y_i.set(str(pid['y']['i'])); self.pid_y_d.set(str(pid['y']['d']))
-            self.tic_vel.set(str(tic['velocity'])); self.km_vel.set(str(km['velocity']))
-            self.tic_current.set(str(tic['current_limit'])); self.tic_step_str.set(self.inv_step_mode_map.get(tic['step_mode'], "Unknown"))
-            messagebox.showinfo("Success", "Current settings loaded.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not get settings: {e}")
-            
-    def _apply_slow_settings(self):
-        try:
-            self.aligner.set_pid_settings(float(self.pid_x_p.get()), float(self.pid_x_i.get()), float(self.pid_x_d.get()), float(self.pid_y_p.get()), float(self.pid_y_i.get()), float(self.pid_y_d.get()))
-            step_mode_int = self.step_mode_map.get(self.tic_step_str.get())
-            self.aligner.set_tic_settings(int(self.tic_vel.get()), int(self.tic_current.get()), step_mode_int)
-            self.aligner.set_km_settings(float(self.km_vel.get()))
-            messagebox.showinfo("Success", "Settings applied successfully.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Could not apply settings: {e}")
-            
-    def _update_gui_live_data(self, x_err, y_err, current_sum, d_tic, d_gon):
-        now = time.time()
-        if now - getattr(self, 'last_slow_update_time', 0) < self.gui_update_interval:
-            return
-        self.last_slow_update_time = now
-        elapsed_time = now - self.start_time
-        if self.plotting_window and self.plotting_window.winfo_exists():
-            self.plotting_window.update_plot(elapsed_time, x_err, y_err)
-        status_text = f"Status: Running... | Err:[{x_err:.4f},{y_err:.4f}] | Sum:{current_sum:.3f} | Corr:[{d_tic:.2f},{d_gon:.2f}]"
-        self.loop_status_var.set(status_text)
-        
+
 
 if __name__ == "__main__":
     if startup_error:
-        print("--- STARTUP FAILED ---"); print(f"Error details: {startup_error}")
+        print("--- STARTUP FAILED ---")
+        print(f"Error details: {startup_error}")
         try:
-            root = tk.Tk(); root.withdraw()
-            messagebox.showerror("Hardware Not Found", f"Could not find required hardware on startup.\n\nDetails: {startup_error}")
-        except tk.TclError: pass
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("Hardware Not Found", 
+                               f"Could not find required hardware on startup.\n\nDetails: {startup_error}")
+        except tk.TclError:
+            pass
     else:
         try:
             app = App()
@@ -600,4 +1259,3 @@ if __name__ == "__main__":
             print("\n--- UNEXPECTED STARTUP ERROR ---")
             import traceback
             traceback.print_exc()
-

@@ -65,3 +65,4 @@ IDE / Editor specific
 
 Custom Ignored Files
 SSS.py
+*.log
