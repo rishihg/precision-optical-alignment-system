@@ -30,6 +30,11 @@ class OpticalAligner:
         self.Minv = None
         self.pid_x = PID(Kp=0.1, Ki=0.1, Kd=0.05, setpoint=0.0)
         self.pid_y = PID(Kp=0.1, Ki=0.1, Kd=0.05, setpoint=0.0)
+
+        # Fast steering PID controllers (INDEPENDENT X and Y for custom mode)
+        self.fast_pid_x = PID(Kp=0.5, Ki=0.0, Kd=0.0, setpoint=0.0)
+        self.fast_pid_y = PID(Kp=0.5, Ki=0.0, Kd=0.0, setpoint=0.0)
+
         self.baseline_sum = None
         self.last_pid_params = {'p': 1.0, 'i': 0.0, 'd': 0.0}
         
@@ -323,7 +328,7 @@ class OpticalAligner:
                         self._kqd_buffer.append(reading)
                         self._latest_kqd_reading = reading
                 
-                time.sleep(0.01)  # 100 Hz reading rate
+                time.sleep(0.001)  # 1kHz reading rate
                 
             except Exception as e:
                 print(f"KQD reader error: {e}", file=sys.stderr)
@@ -529,32 +534,35 @@ class OpticalAligner:
     # ==================== FAST STEERING CONTROL ====================
     
     def run_fast_feedback_loop(self, mode="closed_loop", pid_params=None, 
-                               manual_output=None, threaded=False, 
-                               status_callback=None):
+                           manual_output=None, custom_pid_params=None,
+                           threaded=False, status_callback=None):
         """
         Run fast steering feedback loop.
-        
+
         Args:
-            mode: 'monitor', 'open_loop', or 'closed_loop'
-            pid_params: Dict with 'p', 'i', 'd' keys (for closed_loop)
+            mode: 'monitor', 'open_loop', 'closed_loop', or 'closed_loop_custom'
+            pid_params: Dict with 'p', 'i', 'd' keys (for KQD internal closed_loop)
             manual_output: Dict with 'xpos', 'ypos' keys (for open_loop)
+            custom_pid_params: Dict with 'p_x', 'i_x', 'd_x', 'p_y', 'i_y', 'd_y' (for closed_loop_custom)
             threaded: If True, run in background thread
             status_callback: Optional callback function(xdiff, ydiff, sum)
         """
         if threaded:
-            return self._start_fast_loop_thread(mode, pid_params, manual_output, status_callback)
+            return self._start_fast_loop_thread(mode, pid_params, manual_output, custom_pid_params, status_callback)
         else:
-            return self._fast_feedback_loop_impl(mode, pid_params, manual_output, status_callback)
+            return self._fast_feedback_loop_impl(mode, pid_params, manual_output, custom_pid_params, status_callback)
+        
+
     
-    def _start_fast_loop_thread(self, mode, pid_params, manual_output, status_callback):
+    
+    def _start_fast_loop_thread(self, mode, pid_params, manual_output, custom_pid_params, status_callback):
         """Start fast loop in background thread."""
         if self._fast_loop_thread and self._fast_loop_thread.is_alive():
             return "error_already_running"
         
-        self._stop_fast_loop_event.clear()
         self._fast_loop_thread = threading.Thread(
             target=self._fast_feedback_loop_impl,
-            args=(mode, pid_params, manual_output, status_callback),
+            args=(mode, pid_params, manual_output, custom_pid_params, status_callback),
             name="Fast-Feedback",
             daemon=True
         )
@@ -565,12 +573,15 @@ class OpticalAligner:
         
         return "started"
     
-    def _fast_feedback_loop_impl(self, mode, pid_params, manual_output, status_callback):
-        """Internal implementation of fast feedback loop."""
+    def _fast_feedback_loop_impl(self, mode, pid_params, manual_output, custom_pid_params, status_callback):
+        """Internal implementation of fast feedback loop with custom PID support."""
         if not self.kqd:
             with self._status_lock:
                 self.fast_loop_status = "error_hardware_missing"
             return "error_hardware_missing"
+        
+        # CRITICAL: Clear the stop event before starting
+        self._stop_fast_loop_event.clear()
         
         print(f"\nStarting fast feedback loop in {mode} mode.")
         
@@ -578,6 +589,7 @@ class OpticalAligner:
             # Set up the mode
             with self.kqd_lock:
                 if mode == "closed_loop":
+                    # Use KQD's internal PID
                     if pid_params:
                         self.kqd.set_pid_parameters(
                             p=pid_params.get('p', 1.0),
@@ -585,26 +597,125 @@ class OpticalAligner:
                             d=pid_params.get('d', 0.0)
                         )
                         self.last_pid_params = pid_params
+                    self.kqd.set_operation_mode("closed_loop")
+                    
+                elif mode == "closed_loop_custom":
+                    # Use custom Python PID with independent X/Y
+                    if custom_pid_params:
+                        self.fast_pid_x.Kp = custom_pid_params.get('p_x', 0.5)
+                        self.fast_pid_x.Ki = custom_pid_params.get('i_x', 0.0)
+                        self.fast_pid_x.Kd = custom_pid_params.get('d_x', 0.0)
+                        
+                        self.fast_pid_y.Kp = custom_pid_params.get('p_y', 0.5)
+                        self.fast_pid_y.Ki = custom_pid_params.get('i_y', 0.0)
+                        self.fast_pid_y.Kd = custom_pid_params.get('d_y', 0.0)
+                    
+                    self.fast_pid_x.reset()
+                    self.fast_pid_y.reset()
+                    
+                    # Set KQD to open loop for manual control
+                    self.kqd.set_operation_mode("open_loop")
+                    print(f"Custom PID started: X(P={self.fast_pid_x.Kp}, I={self.fast_pid_x.Ki}, D={self.fast_pid_x.Kd})")
+                    print(f"                    Y(P={self.fast_pid_y.Kp}, I={self.fast_pid_y.Ki}, D={self.fast_pid_y.Kd})")
+                    
                 elif mode == "open_loop":
+                    # Manual voltage control
                     if manual_output:
                         self.kqd.set_manual_output(
                             xpos=manual_output.get('xpos', 0.0),
                             ypos=manual_output.get('ypos', 0.0)
                         )
-                
-                self.kqd.set_operation_mode(mode)
+                    self.kqd.set_operation_mode("open_loop")
+                    
+                elif mode == "monitor":
+                    # Just observe, no control
+                    self.kqd.set_operation_mode("monitor")
             
-            # Monitor loop
-            while not self._stop_fast_loop_event.is_set():
-                r = self.get_latest_reading()
+            # Main control loop
+            if mode == "closed_loop_custom":
+                # Custom PID loop at ~200-500 Hz
+                target_dt = 0.002  # 500 Hz target (will be limited by USB/I2C)
                 
-                if r and status_callback:
-                    status_callback(r.xdiff, r.ydiff, r.sum)
+                print("Entering custom PID control loop...")
+                # Verify KQD reader is active
+                if not self._kqd_reader_thread or not self._kqd_reader_thread.is_alive():
+                    print("ERROR: KQD reader thread not running!")
+                    with self._status_lock:
+                        self.fast_loop_status = "error_no_sensor_data"
+                    return "error_no_sensor_data"
                 
-                time.sleep(0.05)  # 20 Hz update rate for monitoring
+                # Wait for initial readings
+                print("Waiting for sensor data...")
+                for i in range(10):
+                    r = self.get_latest_reading()
+                    if r:
+                        print(f"Got initial reading: X={r.xdiff:.4f}, Y={r.ydiff:.4f}, Sum={r.sum:.4f}")
+                        break
+                    time.sleep(0.1)
+                else:
+                    print("ERROR: No sensor readings available!")
+                    with self._status_lock:
+                        self.fast_loop_status = "error_no_sensor_data"
+                    return "error_no_sensor_data"
+                loop_count = 0
+    
+                
+                while not self._stop_fast_loop_event.is_set():
+                    loop_start = time.time()
+                    
+                    # Get latest sensor reading (non-blocking)
+                    r = self.get_latest_reading()
+                    
+                    if r:
+                        # Compute independent PID outputs
+                        control_x = self.fast_pid_x.compute(r.xdiff)
+                        control_y = self.fast_pid_y.compute(r.ydiff)
+                        
+                        # Clamp to ±10V range (KQD output limits)
+                        control_x = np.clip(control_x, -10.0, 10.0)
+                        control_y = np.clip(control_y, -10.0, 10.0)
+                        
+                        loop_count += 1
+                        if loop_count % 100 == 0:
+                            print(f"Loop {loop_count} | "
+                                  f"X_err={r.xdiff:+.4f} Y_err={r.ydiff:+.4f} | "
+                                  f"Xout={control_x:+.4f}V Yout={control_y:+.4f}V | "
+                                  f"Sum={r.sum:.4f}")
+                        
+                        # Send to KQD outputs
+                        try:
+                            with self.kqd_lock:
+                                self.kqd.set_manual_output(xpos=control_x, ypos=control_y)
+                        except Exception as e:
+
+
+                            print(f"ERROR setting manual output: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            break  # Exit loop on error
+                        
+                        # Status callback
+                        if status_callback:
+                            status_callback(r.xdiff, r.ydiff, r.sum)
+                    
+                    # Maintain loop rate
+                    elapsed = time.time() - loop_start
+                    if elapsed < target_dt:
+                        time.sleep(target_dt - elapsed)
             
-            # Clean up - return to open_loop mode
+            else:
+                # Monitor loop for other modes (closed_loop, open_loop, monitor)
+                while not self._stop_fast_loop_event.is_set():
+                    r = self.get_latest_reading()
+                    
+                    if r and status_callback:
+                        status_callback(r.xdiff, r.ydiff, r.sum)
+                    
+                    time.sleep(0.05)  # 20 Hz monitoring rate
+            
+            # Clean up - return to open_loop mode and zero outputs
             with self.kqd_lock:
+                self.kqd.set_manual_output(xpos=0.0, ypos=0.0)
                 self.kqd.set_operation_mode("open_loop")
             
             print("\nFast loop stopped.")
@@ -616,9 +727,22 @@ class OpticalAligner:
             
         except Exception as e:
             print(f"\nFast loop error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            
+            # Try to clean up on error
+            try:
+                with self.kqd_lock:
+                    self.kqd.set_manual_output(xpos=0.0, ypos=0.0)
+                    self.kqd.set_operation_mode("open_loop")
+            except:
+                pass
+            
             with self._status_lock:
                 self.fast_loop_status = "error"
             return "error"
+    
+    
     
     def stop_fast_loop(self):
         """Stop the fast feedback loop."""
@@ -976,4 +1100,4 @@ class OpticalAligner:
     #             self.kqd.set_output_parameters(**new_params)
     #         print("\nSettings updated successfully.")
     #     except Exception as e:
-    #         print(f"\nError managing settings: {e}", file=sys.stderr)
+    #         print(f"\nError managing settings: {e}", file
