@@ -6,6 +6,7 @@ from optical_aligner import OpticalAligner
 from collections import deque
 import sys
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 # --- CONFIGURATION ---
@@ -292,49 +293,142 @@ class FastSteeringWindow(tk.Toplevel):
         
         mode_frame = ttk.LabelFrame(self, text="Mode Control")
         mode_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Radiobutton(mode_frame, text="Monitor", 
-                       variable=self.master_app.fast_mode_var, 
-                       value="monitor", 
-                       command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
-        ttk.Radiobutton(mode_frame, text="Open Loop", 
-                       variable=self.master_app.fast_mode_var, 
-                       value="open_loop", 
-                       command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
-        ttk.Radiobutton(mode_frame, text="Closed Loop", 
-                       variable=self.master_app.fast_mode_var, 
-                       value="closed_loop", 
-                       command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
 
-        params_frame = ttk.LabelFrame(self, text="Parameters")
-        params_frame.pack(fill="x", padx=5, pady=5)
-        
-        ttk.Label(params_frame, text="CL PID (P/I/D):").grid(row=0, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_p, width=5).grid(row=0, column=1)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_i, width=5).grid(row=0, column=2)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_d, width=5).grid(row=0, column=3)
-        
-        ttk.Label(params_frame, text="OL Voltage (X/Y):").grid(row=1, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_vx, width=5).grid(row=1, column=1)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_vy, width=5).grid(row=1, column=2)
-        
-        ttk.Label(params_frame, text="X Gain (-1 to 1):").grid(row=2, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_xgain, width=5).grid(row=2, column=1)
-        ttk.Label(params_frame, text="Y Gain (-1 to 1):").grid(row=2, column=2, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_ygain, width=5).grid(row=2, column=3)
-        
-        ttk.Label(params_frame, text="X Range (V):").grid(row=3, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_xmin, width=5).grid(row=3, column=1)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_xmax, width=5).grid(row=3, column=2)
-        
-        ttk.Label(params_frame, text="Y Range (V):").grid(row=4, column=0, sticky="w", padx=5)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_ymin, width=5).grid(row=4, column=1)
-        ttk.Entry(params_frame, textvariable=self.master_app.fast_ymax, width=5).grid(row=4, column=2)
-        
-        ttk.Button(params_frame, text="Get Current", 
-                  command=self.master_app._get_fast_settings).grid(row=5, column=0, pady=10)
-        ttk.Button(params_frame, text="Apply Settings", 
-                  command=self.master_app._apply_fast_settings).grid(row=5, column=1, pady=10)
+        ttk.Radiobutton(mode_frame, text="Monitor", 
+                    variable=self.master_app.fast_mode_var, 
+                    value="monitor", 
+                    command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="Open Loop", 
+                    variable=self.master_app.fast_mode_var, 
+                    value="open_loop", 
+                    command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="Closed Loop (KQD)", 
+                    variable=self.master_app.fast_mode_var, 
+                    value="closed_loop", 
+                    command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
+        ttk.Radiobutton(mode_frame, text="Custom PID (Python)", 
+                    variable=self.master_app.fast_mode_var, 
+                    value="closed_loop_custom", 
+                    command=self.master_app._apply_fast_mode).pack(side="left", padx=5)
+
+        # Create notebook for organized parameter tabs
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # ========== TAB 1: KQD Internal PID ==========
+        kqd_tab = ttk.Frame(notebook)
+        notebook.add(kqd_tab, text="KQD PID")
+
+        ttk.Label(kqd_tab, text="KQD Internal PID Parameters", 
+                font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=4, pady=10)
+
+        ttk.Label(kqd_tab, text="P Gain:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(kqd_tab, textvariable=self.master_app.fast_p, width=10).grid(row=1, column=1, sticky="w", padx=5)
+
+        ttk.Label(kqd_tab, text="I Gain:").grid(row=2, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(kqd_tab, textvariable=self.master_app.fast_i, width=10).grid(row=2, column=1, sticky="w", padx=5)
+
+        ttk.Label(kqd_tab, text="D Gain:").grid(row=3, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(kqd_tab, textvariable=self.master_app.fast_d, width=10).grid(row=3, column=1, sticky="w", padx=5)
+
+        ttk.Label(kqd_tab, text="(Used in 'Closed Loop (KQD)' mode)", 
+                foreground="gray").grid(row=4, column=0, columnspan=4, pady=10)
+
+        # ========== TAB 2: Custom Python PID ==========
+        custom_tab = ttk.Frame(notebook)
+        notebook.add(custom_tab, text="Custom PID")
+
+        # Info banner
+        info_frame = ttk.Frame(custom_tab, relief="groove", borderwidth=1)
+        info_frame.grid(row=0, column=0, columnspan=4, sticky="ew", padx=5, pady=5)
+        ttk.Label(info_frame, 
+                text="Error signal range: ±10V  |  Output range: ±10V  |  Suggested P: 0.01–1.0",
+                foreground="blue", font=("TkDefaultFont", 8)).pack(pady=3)
+
+        # X-Axis PID
+        ttk.Label(custom_tab, text="X-Axis PID:", 
+                font=("TkDefaultFont", 9, "bold")).grid(row=1, column=0, columnspan=4, sticky="w", padx=5, pady=(10,5))
+
+        ttk.Label(custom_tab, text="P Gain:").grid(row=2, column=0, sticky="e", padx=5, pady=3)
+        ttk.Entry(custom_tab, textvariable=self.master_app.fast_custom_p_x, width=8).grid(row=2, column=1, sticky="w", padx=5)
+        ttk.Label(custom_tab, text="[-1.0 to 1.0]", foreground="gray").grid(row=2, column=2, sticky="w")
+
+        ttk.Label(custom_tab, text="I Gain:").grid(row=3, column=0, sticky="e", padx=5, pady=3)
+        ttk.Entry(custom_tab, textvariable=self.master_app.fast_custom_i_x, width=8).grid(row=3, column=1, sticky="w", padx=5)
+        ttk.Label(custom_tab, text="[-1.0 to 1.0]", foreground="gray").grid(row=3, column=2, sticky="w")
+
+        ttk.Label(custom_tab, text="D Gain:").grid(row=4, column=0, sticky="e", padx=5, pady=3)
+        ttk.Entry(custom_tab, textvariable=self.master_app.fast_custom_d_x, width=8).grid(row=4, column=1, sticky="w", padx=5)
+        ttk.Label(custom_tab, text="[-1.0 to 1.0]", foreground="gray").grid(row=4, column=2, sticky="w")
+
+        ttk.Separator(custom_tab, orient='horizontal').grid(row=5, column=0, columnspan=4, sticky='ew', pady=15)
+
+        # Y-Axis PID
+        ttk.Label(custom_tab, text="Y-Axis PID:", 
+                font=("TkDefaultFont", 9, "bold")).grid(row=6, column=0, columnspan=4, sticky="w", padx=5, pady=(5,5))
+
+        ttk.Label(custom_tab, text="P Gain:").grid(row=7, column=0, sticky="e", padx=5, pady=3)
+        ttk.Entry(custom_tab, textvariable=self.master_app.fast_custom_p_y, width=8).grid(row=7, column=1, sticky="w", padx=5)
+        ttk.Label(custom_tab, text="[-1.0 to 1.0]", foreground="gray").grid(row=7, column=2, sticky="w")
+
+        ttk.Label(custom_tab, text="I Gain:").grid(row=8, column=0, sticky="e", padx=5, pady=3)
+        ttk.Entry(custom_tab, textvariable=self.master_app.fast_custom_i_y, width=8).grid(row=8, column=1, sticky="w", padx=5)
+        ttk.Label(custom_tab, text="[-1.0 to 1.0]", foreground="gray").grid(row=8, column=2, sticky="w")
+
+        ttk.Label(custom_tab, text="D Gain:").grid(row=9, column=0, sticky="e", padx=5, pady=3)
+        ttk.Entry(custom_tab, textvariable=self.master_app.fast_custom_d_y, width=8).grid(row=9, column=1, sticky="w", padx=5)
+        ttk.Label(custom_tab, text="[-1.0 to 1.0]", foreground="gray").grid(row=9, column=2, sticky="w")
+
+        ttk.Label(custom_tab, text="(Used in 'Custom PID (Python)' mode)", 
+                foreground="gray").grid(row=10, column=0, columnspan=4, pady=10)
+
+
+        # ========== TAB 3: Manual & Output Settings ==========
+        settings_tab = ttk.Frame(notebook)
+        notebook.add(settings_tab, text="Output Settings")
+
+        # Open Loop Manual Control
+        ttk.Label(settings_tab, text="Open Loop Manual Voltage", 
+                font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=4, pady=10)
+
+        ttk.Label(settings_tab, text="X Voltage:").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_vx, width=10).grid(row=1, column=1, sticky="w", padx=5)
+
+        ttk.Label(settings_tab, text="Y Voltage:").grid(row=2, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_vy, width=10).grid(row=2, column=1, sticky="w", padx=5)
+
+        ttk.Separator(settings_tab, orient='horizontal').grid(row=3, column=0, columnspan=4, sticky='ew', pady=15)
+
+        # Output Parameters
+        ttk.Label(settings_tab, text="Output Parameters", 
+                font=("TkDefaultFont", 10, "bold")).grid(row=4, column=0, columnspan=4, pady=10)
+
+        ttk.Label(settings_tab, text="X Gain:").grid(row=5, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_xgain, width=10).grid(row=5, column=1, sticky="w", padx=5)
+
+        ttk.Label(settings_tab, text="Y Gain:").grid(row=6, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_ygain, width=10).grid(row=6, column=1, sticky="w", padx=5)
+
+        ttk.Label(settings_tab, text="X Range Min:").grid(row=7, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_xmin, width=10).grid(row=7, column=1, sticky="w", padx=5)
+
+        ttk.Label(settings_tab, text="X Range Max:").grid(row=8, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_xmax, width=10).grid(row=8, column=1, sticky="w", padx=5)
+
+        ttk.Label(settings_tab, text="Y Range Min:").grid(row=9, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_ymin, width=10).grid(row=9, column=1, sticky="w", padx=5)
+
+        ttk.Label(settings_tab, text="Y Range Max:").grid(row=10, column=0, sticky="e", padx=5, pady=5)
+        ttk.Entry(settings_tab, textvariable=self.master_app.fast_ymax, width=10).grid(row=10, column=1, sticky="w", padx=5)
+
+        # Buttons at bottom of settings tab
+        button_frame = ttk.Frame(settings_tab)
+        button_frame.grid(row=11, column=0, columnspan=4, pady=20)
+
+        ttk.Button(button_frame, text="Get Current Settings", 
+                command=self.master_app._get_fast_settings).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Apply Settings", 
+                command=self.master_app._apply_fast_settings).pack(side="left", padx=5)
 
         
 
@@ -384,7 +478,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Optical Alignment Control - Launcher")
-        self.geometry("1000x600")
+        self.geometry("1000x850")
 
         self.aligner = None 
         self.is_connected = False
@@ -416,6 +510,7 @@ class App(tk.Tk):
         self.km_accel = tk.StringVar(value="2.0")
         self.tic_current = tk.StringVar(value="1000")
         self.fast_ymax = tk.StringVar(value="10.0")
+
 
         # Add calibration setting variables
         self.cal_x_step = tk.StringVar(value="10")
@@ -450,6 +545,13 @@ class App(tk.Tk):
         self.fast_xmax = tk.StringVar(value="10.0")
         self.fast_ymin = tk.StringVar(value="-10.0")
         self.fast_ymax = tk.StringVar(value="10.0")
+        # Custom PID parameters (independent X and Y)
+        self.fast_custom_p_x = tk.StringVar(value="0.5")
+        self.fast_custom_i_x = tk.StringVar(value="0.0")
+        self.fast_custom_d_x = tk.StringVar(value="0.0")
+        self.fast_custom_p_y = tk.StringVar(value="0.5")
+        self.fast_custom_i_y = tk.StringVar(value="0.0")
+        self.fast_custom_d_y = tk.StringVar(value="0.0")
 
         self.paned_window = ttk.PanedWindow(self, orient=tk.VERTICAL)
         self.paned_window.pack(fill="both", expand=True)
@@ -508,6 +610,71 @@ class App(tk.Tk):
 
         window_frame = ttk.LabelFrame(launcher_frame, text="Control Panels")
         window_frame.pack(pady=5, fill="x")
+
+        # ==================== SIGNAL STATISTICS ====================
+        stats_frame = ttk.LabelFrame(launcher_frame, text="Signal Statistics")
+        stats_frame.pack(pady=5, fill="x", padx=5)
+
+        # Controls row
+        ctrl_row = ttk.Frame(stats_frame)
+        ctrl_row.pack(fill="x", padx=5, pady=5)
+
+        ttk.Label(ctrl_row, text="Samples:").pack(side="left", padx=5)
+        self.stats_samples_var = tk.StringVar(value="500")
+        ttk.Entry(ctrl_row, textvariable=self.stats_samples_var, width=6).pack(side="left", padx=2)
+
+        self.calc_stats_btn = ttk.Button(ctrl_row, text="Calculate Statistics",
+                                         command=self._calculate_statistics,
+                                         state="disabled")
+        self.calc_stats_btn.pack(side="left", padx=10)
+
+        self.stats_progress_var = tk.StringVar(value="")
+        ttk.Label(ctrl_row, textvariable=self.stats_progress_var,
+                  foreground="blue").pack(side="left", padx=5)
+
+        # Results grid
+        results_frame = ttk.Frame(stats_frame)
+        results_frame.pack(fill="x", padx=5, pady=(0, 5))
+
+        # Headers
+        ttk.Label(results_frame, text="",        width=12).grid(row=0, column=0)
+        ttk.Label(results_frame, text="Mean",    width=12, font=("TkDefaultFont", 9, "bold")).grid(row=0, column=1)
+        ttk.Label(results_frame, text="Std Dev", width=12, font=("TkDefaultFont", 9, "bold")).grid(row=0, column=2)
+        ttk.Label(results_frame, text="Min",     width=12, font=("TkDefaultFont", 9, "bold")).grid(row=0, column=3)
+        ttk.Label(results_frame, text="Max",     width=12, font=("TkDefaultFont", 9, "bold")).grid(row=0, column=4)
+
+        # X Error row
+        ttk.Label(results_frame, text="X Error (V):", anchor="e").grid(row=1, column=0, sticky="e", pady=2)
+        self.stats_x_mean = tk.StringVar(value="---")
+        self.stats_x_std  = tk.StringVar(value="---")
+        self.stats_x_min  = tk.StringVar(value="---")
+        self.stats_x_max  = tk.StringVar(value="---")
+        ttk.Label(results_frame, textvariable=self.stats_x_mean, width=12, relief="sunken", anchor="center").grid(row=1, column=1, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_x_std,  width=12, relief="sunken", anchor="center").grid(row=1, column=2, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_x_min,  width=12, relief="sunken", anchor="center").grid(row=1, column=3, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_x_max,  width=12, relief="sunken", anchor="center").grid(row=1, column=4, padx=2)
+
+        # Y Error row
+        ttk.Label(results_frame, text="Y Error (V):", anchor="e").grid(row=2, column=0, sticky="e", pady=2)
+        self.stats_y_mean = tk.StringVar(value="---")
+        self.stats_y_std  = tk.StringVar(value="---")
+        self.stats_y_min  = tk.StringVar(value="---")
+        self.stats_y_max  = tk.StringVar(value="---")
+        ttk.Label(results_frame, textvariable=self.stats_y_mean, width=12, relief="sunken", anchor="center").grid(row=2, column=1, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_y_std,  width=12, relief="sunken", anchor="center").grid(row=2, column=2, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_y_min,  width=12, relief="sunken", anchor="center").grid(row=2, column=3, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_y_max,  width=12, relief="sunken", anchor="center").grid(row=2, column=4, padx=2)
+
+        # Sum row
+        ttk.Label(results_frame, text="Sum (V):", anchor="e").grid(row=3, column=0, sticky="e", pady=2)
+        self.stats_sum_mean = tk.StringVar(value="---")
+        self.stats_sum_std  = tk.StringVar(value="---")
+        self.stats_sum_min  = tk.StringVar(value="---")
+        self.stats_sum_max  = tk.StringVar(value="---")
+        ttk.Label(results_frame, textvariable=self.stats_sum_mean, width=12, relief="sunken", anchor="center").grid(row=3, column=1, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_sum_std,  width=12, relief="sunken", anchor="center").grid(row=3, column=2, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_sum_min,  width=12, relief="sunken", anchor="center").grid(row=3, column=3, padx=2)
+        ttk.Label(results_frame, textvariable=self.stats_sum_max,  width=12, relief="sunken", anchor="center").grid(row=3, column=4, padx=2)
         
         self.open_slow_btn = ttk.Button(window_frame, text="Open Slow Control Panel", 
                                        command=self._open_slow_steering_window, 
@@ -679,6 +846,7 @@ class App(tk.Tk):
             if self.aligner.kqd:
                 self.open_fast_btn.config(state="normal")
                 self.open_plot_btn.config(state="normal")
+                self.calc_stats_btn.config(state="normal")
                 
             if self.aligner.km and self.aligner.tic:
                 self.open_slow_btn.config(state="normal")
@@ -939,13 +1107,38 @@ class App(tk.Tk):
                     d = float(self.fast_d.get())
                     pid_params = {'p': p, 'i': i, 'd': d}
                     
-                    print(f"Starting closed-loop with PID: P={p}, I={i}, D={d}")
+                    print(f"Starting closed-loop (KQD internal) with PID: P={p}, I={i}, D={d}")
                     result = self.aligner.run_fast_feedback_loop(
                         mode="closed_loop",
                         pid_params=pid_params,
                         threaded=True
                     )
                     print(f"Fast steering closed-loop result: {result}")
+                    
+                elif mode == "closed_loop_custom":
+                    # Get custom PID parameters
+                    p_x = float(self.fast_custom_p_x.get())
+                    i_x = float(self.fast_custom_i_x.get())
+                    d_x = float(self.fast_custom_d_x.get())
+                    p_y = float(self.fast_custom_p_y.get())
+                    i_y = float(self.fast_custom_i_y.get())
+                    d_y = float(self.fast_custom_d_y.get())
+                    
+                    custom_pid_params = {
+                        'p_x': p_x, 'i_x': i_x, 'd_x': d_x,
+                        'p_y': p_y, 'i_y': i_y, 'd_y': d_y
+                    }
+                    
+                    print(f"Starting custom PID mode:")
+                    print(f"  X-Axis: P={p_x}, I={i_x}, D={d_x}")
+                    print(f"  Y-Axis: P={p_y}, I={i_y}, D={d_y}")
+                    
+                    result = self.aligner.run_fast_feedback_loop(
+                        mode="closed_loop_custom",
+                        custom_pid_params=custom_pid_params,
+                        threaded=True
+                    )
+                    print(f"Fast steering custom PID result: {result}")
                     
             except Exception as e:
                 print(f"ERROR in _apply_fast_mode: {e}")
@@ -1079,6 +1272,81 @@ class App(tk.Tk):
             print("Signal baseline recalibrated.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to recalibrate: {e}")
+
+    def _calculate_statistics(self):
+        """Collect N samples and compute mean/std/min/max for X, Y, Sum."""
+        try:
+            n_samples = int(self.stats_samples_var.get())
+            if n_samples < 10 or n_samples > 10000:
+                messagebox.showerror("Input Error", "Samples must be between 10 and 10000.")
+                return
+        except ValueError:
+            messagebox.showerror("Input Error", "Invalid sample count.")
+            return
+
+        # Disable button during collection
+        self.calc_stats_btn.config(state="disabled")
+        self.stats_progress_var.set("Collecting...")
+
+        # Clear old results
+        for var in [self.stats_x_mean, self.stats_x_std, self.stats_x_min, self.stats_x_max,
+                    self.stats_y_mean, self.stats_y_std, self.stats_y_min, self.stats_y_max,
+                    self.stats_sum_mean, self.stats_sum_std, self.stats_sum_min, self.stats_sum_max]:
+            var.set("...")
+
+        def collect():
+            x_vals, y_vals, sum_vals = [], [], []
+
+            while len(x_vals) < n_samples:
+                r = self.aligner.get_latest_reading()
+                if r:
+                    x_vals.append(r.xdiff)
+                    y_vals.append(r.ydiff)
+                    sum_vals.append(r.sum)
+
+                    # Update progress every 50 samples
+                    if len(x_vals) % 50 == 0:
+                        self.after(0, self.stats_progress_var.set,
+                                f"Collecting... {len(x_vals)}/{n_samples}")
+
+                time.sleep(0.01)  # 100 Hz collection rate
+
+            # Compute statistics
+            x_arr   = np.array(x_vals)
+            y_arr   = np.array(y_vals)
+            sum_arr = np.array(sum_vals)
+
+            def update_results():
+                self.stats_x_mean.set(f"{np.mean(x_arr):+.4f}")
+                self.stats_x_std.set( f"{np.std(x_arr):.4f}")
+                self.stats_x_min.set( f"{np.min(x_arr):+.4f}")
+                self.stats_x_max.set( f"{np.max(x_arr):+.4f}")
+
+                self.stats_y_mean.set(f"{np.mean(y_arr):+.4f}")
+                self.stats_y_std.set( f"{np.std(y_arr):.4f}")
+                self.stats_y_min.set( f"{np.min(y_arr):+.4f}")
+                self.stats_y_max.set( f"{np.max(y_arr):+.4f}")
+
+                self.stats_sum_mean.set(f"{np.mean(sum_arr):.4f}")
+                self.stats_sum_std.set( f"{np.std(sum_arr):.4f}")
+                self.stats_sum_min.set( f"{np.min(sum_arr):.4f}")
+                self.stats_sum_max.set( f"{np.max(sum_arr):.4f}")
+
+                self.stats_progress_var.set(f"Done! ({n_samples} samples)")
+                self.calc_stats_btn.config(state="normal")
+
+                print(f"\n{'='*50}")
+                print(f"SIGNAL STATISTICS ({n_samples} samples)")
+                print(f"{'='*50}")
+                print(f"{'':12} {'Mean':>10} {'Std Dev':>10} {'Min':>10} {'Max':>10}")
+                print(f"{'X Error':12} {np.mean(x_arr):>+10.4f} {np.std(x_arr):>10.4f} {np.min(x_arr):>+10.4f} {np.max(x_arr):>+10.4f}")
+                print(f"{'Y Error':12} {np.mean(y_arr):>+10.4f} {np.std(y_arr):>10.4f} {np.min(y_arr):>+10.4f} {np.max(y_arr):>+10.4f}")
+                print(f"{'Sum':12} {np.mean(sum_arr):>10.4f} {np.std(sum_arr):>10.4f} {np.min(sum_arr):>10.4f} {np.max(sum_arr):>10.4f}")
+                print(f"{'='*50}\n")
+
+            self.after(0, update_results)
+
+        threading.Thread(target=collect, daemon=True).start()
 
     def _start_slow_loop(self):
         """Start slow steering feedback loop."""
